@@ -15,7 +15,7 @@ from dragon.native.event import Event
 
 from rome.config import ModelConfig
 from rome.trainer import Trainer
-from rome.utils import load_model
+from rome.utils import load_model, read_weight_version, reload_model
 from rome.workflow import Workflow
 
 class SequentialFlowConfig():
@@ -200,6 +200,7 @@ class SequentialFlow(Workflow):
 
             # load models
             model, tokenizer = load_model(model_config)
+            current_weight_version = read_weight_version(_workflow_ddict)
             #generation config
             
             while not _terminate_event.is_set():
@@ -215,6 +216,13 @@ class SequentialFlow(Workflow):
                 # process requests
                 if len(requests_to_process) > 0:
                     for i in range(0, len(requests_to_process), batch_size):
+                        new_version = read_weight_version(
+                            _workflow_ddict, default=current_weight_version
+                        )
+                        if new_version != current_weight_version:
+                            reload_model(model, model_config)
+                            current_weight_version = new_version
+
                         batch = requests_to_process[i:i+batch_size]
                         # generate outputs for batch
                         prompts = [requests[request_id] for request_id in batch]
