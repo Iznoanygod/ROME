@@ -11,7 +11,7 @@ fi
 INPUTFILE="$1"
 OUTPUTDIR="${2:-${INPUTFILE}.out}"
 RANDOMSEED="${3:-0}"
-
+#singularity run --nv  -B /work/hdd/bdyk/apark4/foldcache:/cache -B /work/nvme/bdyk/apark4/ROME:/work   colabfold_1.6.0-cuda12.sif  colabfold_batch /work/stage-chey/sequences.fasta /work/output-chey
 export PATH="/work/nvme/bdyk/apark4/localcolabfold/.pixi/envs/default/bin:${PATH}"
 
 colabfold_batch \
