@@ -9,8 +9,7 @@ class SequentialFlow(Workflow):
         trainer: Trainer,
         model: Model,
     ):
-        super().__init__(flow=flow, trainer=trainer)
-        self.model = model
+        super().__init__(flow=flow, trainer=trainer, model=model)
         self.num_generators = 4
     
     async def launch(self):
@@ -90,4 +89,21 @@ class SequentialFlow(Workflow):
         async def trainer_task():
             self.trainer.run_training(*args, **kwargs)
             return
+
+        reward_task=None
+        if self.trainer.reward_func_is_task:
+            @self.flow.function_task
+            async def reward_task():
+                
+
+        _generate_terminate = asyncio.Event()
+        generator_tasks = []
+        for i in range(self.num_generators):
+            generator_tasks.append(generator_task(_gentask_assignments_ddicts[i], _completion_ddict, _generate_terminate, seed=42+i))
+
+        trainer_task_future = trainer_task()
+        await trainer_task_future
+        _generate_terminate.set()  # signal generator tasks to stop
+        await asyncio.gather(*generator_tasks)
+        return
 

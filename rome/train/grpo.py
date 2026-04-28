@@ -11,6 +11,7 @@ class GRPO(Trainer):
         training_kwargs: Optional[Dict[str, Any]] = None,
         rollout_func: Optional[Callable] = None,
         reward_funcs: Optional[List[Callable]] = None,
+        reward_func_is_task: Optional[bool] = False,
         on_step_end: Optional[Callable] = None,
         prompt_gen_batch_size: int = 2,
     ):
@@ -82,14 +83,15 @@ class GRPO(Trainer):
         #    raise RuntimeError("rollout_func must be provided to GRPOTrainerWrapper")
         if not self.reward_funcs:
             raise RuntimeError("reward_funcs must be provided to GRPOTrainerWrapper")
-
+        def _rollout_func( prompts: list[str], trainer: GRPOTrainer, prompt_ddict=prompt_output_ddict, generated_ddict=generated_ddict):
+            pass
         # build dataset from keys (simple formatter consistent with existing code)
 
         CallbackClass = self._make_callback_class(reset_event, superfamily_ddict, gen_fam_ddict, folded_ddict, scored_ddict)
         trainer = GRPOTrainer(
             model=model,
             processing_class=tokenizer,
-            rollout_func=self.rollout_func,
+            rollout_func=_rollout_func,
             reward_funcs=self.reward_funcs,
             args=grpo_config,
             train_dataset=dataset,

@@ -1,4 +1,5 @@
 from typing import Callable, List, Optional, Dict, Any
+import typeguard
 
 class Trainer:
     @typeguard.typechecked
