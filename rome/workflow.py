@@ -1,23 +1,25 @@
-import asyncio
-import logging
-from typing import Optional, Dict, Any, Callable, List, Tuple
-from radical.asyncflow import WorkflowEngine 
-from rome.trainer import Trainer
-from rome.model import Model
-import itertools
+from radical.asyncflow import WorkflowEngine
 
-logger = logging.getLogger(__name__)
+from rome.config import ModelConfig, SequentialFlowConfig
+from rome.trainer import Trainer, TrainerResult
 
-class Workflow:
+class Workflow():
     def __init__(
         self,
-        flow: WorkflowEngine,
+        *,
+        model_config: ModelConfig,
         trainer: Trainer,
-        model: Model,
+        evaluate_func: Callable,
+        asyncflow: WorkflowEngine,
+        
     ):
-        self.flow = flow
+        self.model_config = model_config
         self.trainer = trainer
-        self.model = model
+        self.evaluate_func = evaluate_func
+        self.asyncflow = asyncflow
+
+    async def launch(self, **kwargs) -> Any:
+        """Launch the workflow. Must be implemented by subclasses."""
+        raise NotImplementedError("Workflow.launch() must be implemented by subclasses.")
+
     
-    async def launch(self):
-        raise NotImplementedError("Subclasses of Workflow must implement launch()")

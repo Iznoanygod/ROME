@@ -1,109 +1,181 @@
 from rome.workflow import Workflow
-from rome.model import Model
-from rome.trainer import Trainer
+from rose.metrics import GREATER_THAN_THRESHOLD
 
-class SequentialFlow(Workflow):
+from transformers import GenerationConfig
+
+from dragon.native.event import Event
+from dragon.data.ddict import DDict
+
+class SequentialFlowConfig():
+    """Configuration for SequentialFlow."""
     def __init__(
         self,
-        flow: WorkflowEngine,
-        trainer: Trainer,
-        model: Model,
+        iterations: Optional[int] = 10,
+        reward_threshold: Optional[float] = None,
+        operator: Optional[str] = GREATER_THAN_THRESHOLD,
+        num_generators: int = 2,
+        num_scorers: int = 2,
     ):
-        super().__init__(flow=flow, trainer=trainer, model=model)
-        self.num_generators = 4
+        self.iterations = iterations
+        self.reward_threshold = reward_threshold
+        self.operator = operator
+        self.num_generators = num_generators
+        self.num_scorers = num_scorers
+
+class SequentialFlow(Workflow):
+    """Single iterative RL flow backed by ROSE's SequentialReinforcementLearner."""
+
+    def __init__(
+        self,
+        *,
+        model_config: ModelConfig,
+        trainer: Trainer,
+        evaluate_func: Callable,
+        asyncflow: WorkflowEngine,
+        flow_config:SequentialFlowConfig,
+    ):
+        super().__init__(
+            model_config=model_config,
+            trainer=trainer,
+            evaluate_func=evaluate_func,
+            asyncflow=asyncflow,
+        )
+        self.rl = SequentialReinforcementLearner(asyncflow=asyncflow)
+        self.flow_config = flow_config
+        self._generator_tasks = []
+        self._scorer_tasks = []
     
-    async def launch(self):
-        # first start generator tasks
-        from dragon.data.ddict import DDict
+    async def _generation_schedule(self, workflow_ddict, terminate_event: Event):
+        submitted_requests = []
+        while not terminate_event.is_set():
+            requests_to_submit = []
+            generation_requests = workflow_ddict["generation_requests"]
+            for request_id in generation_requests.keys():
+                if request_id not in submitted_requests:
+                    requests_to_submit.append(request_id)
+            # balance requests between generators
+            generator_queues = (workflow_ddict[f"generator_{i}_input"] for i in range(self.flow_config.num_generators))
+            for request in requests_to_submit:
+                # find generator with shortest queue
+                shortest_queue = min(generator_queues, key=lambda q: len(q))
+                shortest_queue[request_id] = generation_requests[request_id]
+                submitted_requests.append(request_id)
+            # update generator queues in workflow_ddict
+            for i in range(self.flow_config.num_generators):
+                workflow_ddict[f"generator_{i}_input"] = generator_queues[i]
 
-        _generation_prompt_ddict = DDict(managers_per_node=1, n_nodes =2, total_mem=1024**3)
-        _completion_ddict        = DDict(managers_per_node=1, n_nodes =2, total_mem=1024**3)
-        _gentask_assignments_ddicts = []
-        for i in range(self.num_generators):
-            _gentask_assignments_ddicts.append(DDict(managers_per_node=1, n_nodes=1, total_mem=1024**3))
+    async def _generation_gather(self, workflow_ddict, terminate_event: Event):
+        while not terminate_event.is_set():
+            generator_outputs = workflow_ddict["generator_outputs"]
 
-        @self.flow.function_task
-        async def generator_task(_gentask_assignment_ddict, _completion_ddict, _stop_event, seed=42):
-            import torch
-            import numpy as np
-            import random
+            for i in range(self.flow_config.num_generators):
+                # check if generator i has requests to process in workflow_ddict, if so, schedule generation task for those requests
+                output_key = f"generator_{i}_output"
+                output_dict = workflow_ddict[output_key]
+                for request_id in output_dict.keys():
+                    if request_id not in generator_outputs:
+                        generator_outputs[request_id] = output_dict[request_id]
+                    
+            workflow_ddict["generator_outputs"] = generator_outputs
 
-            def set_seed(seed=seed) -> None:
-                torch.manual_seed(seed)
-                torch.cuda.manual_seed_all(seed)
-                torch.cuda.manual_seed(seed)
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
-                np.random.seed(seed)
-                random.seed(seed)
+    async def launch(self, iterations: Optional[int] = None) -> None:
+        """Start the sequential RL loop.
 
-            _model, tokenizer = self.model._load_model_and_tokenizer()
+        Parameters
+        ----------
+        iterations : int, optional
+            Override ``flow_config.iterations``. ``0`` runs until the reward
+            threshold is met (requires ``reward_threshold`` to be set).
+        """
 
-            # build prompt set
-            messages = [val for val in prompts for _ in range(num_samples_per_prompt)]
+        # create shared dictionary for workflows
+        workflow_ddict = DDict()
+        terminate_event = Event()
+
+        @asyncflow.function_task
+        async def generation_task(model_config, batch_size, _terminate_event, _workflow_ddict, _input_key, _output_key):
+            generated_requests = []
+
+            # load models
+            model, tokenizer = load_model(model_config)
+            #generation config
             
-            # generate completions
-            set_seed(seed)
-            results = []
-            processed_requests = []
-            with torch.no_grad():
-                ddict_keys = _gentask_assignment_dddict.get_keys()
-                while not _stop_event.is_set():
-                    for key in ddict_keys:
-                        if key not in processed_requests:
-                            request = _gentask_assignment_dddict[key]
-                            prompt = request["prompt"]
-                            num_samples_per_prompt = request["batch_size"]
-                            batch = prompt * num_samples_per_prompt
-                            inputs = tokenizer.apply_chat_template(
-                                batch,
-                                add_generation_prompt=True,
-                                tokenize=True,
-                                padding=True,
-                                return_tensors="pt",
-                            ).to(_model.device)
-                            outputs = _model.generate(
-                                inputs,
-                                max_new_tokens=1024,
-                                output_scores=True,
-                                return_dict_in_generate=True,
-                                do_sample=True,
-                                top_p=0.95,
-                                temperature=0.8,
-                                pad_token_id = tokenizer.eos_token_id
-                            )
-                            transition_scores = _model.compute_transition_scores(
-                                outputs.sequences,
-                                outputs.scores,
-                                normalize_logits=True  # applies log_softmax internally
-                            )
-                            processed_requests.append(key)
-                            _completion_ddict[key] = {
-                                "outputs": outputs.sequences.tolist(),
-                                "transition_scores": transition_scores.tolist(),
-                            }
-                    await asyncio.sleep(1)  # yield control to event loop to allow other tasks to run
-            return results
-        
-        @self.flow.function_task
-        async def trainer_task():
-            self.trainer.run_training(*args, **kwargs)
-            return
-
-        reward_task=None
-        if self.trainer.reward_func_is_task:
-            @self.flow.function_task
-            async def reward_task():
+            while not _terminate_event.is_set():
+                requests_to_process = []
+                # request_ids is dictionary request_id -> prompt
+                requests = _workflow_ddict[_input_key]
+                for request_id in request_ids.keys():
+                    if request_id in generated_requests:
+                        continue
+                    # add to processing list
+                    requests_to_process.append(request_id)
                 
+                # process requests
+                if len(requests_to_process) > 0:
+                    for i in range(0, len(requests_to_process), batch_size):
+                        batch = requests_to_process[i:i+batch_size]
+                        # generate outputs for batch'
+                        prompts = [requests[request_id] for request_id in batch]
+                        outputs = _default_generator_func(prompts, model, tokenizer, model_config.generation_config)
 
-        _generate_terminate = asyncio.Event()
-        generator_tasks = []
-        for i in range(self.num_generators):
-            generator_tasks.append(generator_task(_gentask_assignments_ddicts[i], _completion_ddict, _generate_terminate, seed=42+i))
+                        # put outputs in workflow_ddict
+                        output_dict = _workflow_ddict[_output_key]
+                        for request_id, output in zip(batch, outputs):
+                            output_dict[request_id] = output
+                            generated_requests.append(request_id)
+                        _workflow_ddict[_output_key] = output_dict
+                        
+        @asyncflow.function_task
+        async def scorer_task():
+            scored_requests = []
 
-        trainer_task_future = trainer_task()
-        await trainer_task_future
-        _generate_terminate.set()  # signal generator tasks to stop
-        await asyncio.gather(*generator_tasks)
+            while not _terminate_event.is_set():
+                requests_to_score = []
+                generator_outputs = workflow_ddict["generator_outputs"]
+                for request_id in generator_outputs.keys():
+                    if request_id in scored_requests:
+                        continue
+                    # add to processing list
+                    requests_to_score.append(request_id)
+                
+                # process requests
+                if len(requests_to_score) > 0:
+                    for request_id in requests_to_score:
+                        output = generator_outputs[request_id]
+                        score = _default_scorer_func(output)
+                        scored_requests.append(request_id)
+                        
+        
+        @rl.update_task(as_executable=False)
+        async def train_model(self.model_config, _workflow_ddict):
+            return await trainer.train(self.model_config)
+
+        @rl.as_stop_criterion(metric_name='MODEL_REWARD', threshold=128, operator=GREATER_THAN_THRESHOLD, as_executable=False)
+        async def check_reward():
+            return await self.evaluate_func(self.model_config)
+
+        # start generators
+        for i in range(self.flow_config.num_generators):
+            self._generator_tasks.append(generation_task(
+                model_config=self.model_config,
+                batch_size=self.flow_config.batch_size,
+                _terminate_event=terminate_event,
+                _workflow_ddict=workflow_ddict,
+                _input_key=f"generator_{i}_input",
+                _output_key=f"generator_{i}_output",
+            ))
+        
+        for i in range(self.flow_config.num_scorers):
+            self._scorer_tasks.append(scorer_task())
+        
+
+        # start scorers if needed
+        for i in range(self.flow_config.num_scorers):
+            self._scorer_tasks.append()
+
+        async for state in rl.start():
+            print(f"Iteration {state.iteration}: metric={state.metric_value}")
+
         return
 
+ 
