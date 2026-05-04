@@ -7,7 +7,21 @@ from dragon.native.event import Event
 from dragon.data.ddict import DDict
 
 class SequentialFlowConfig():
-    """Configuration for SequentialFlow."""
+    """Configuration for SequentialFlow.
+
+    Parameters
+    ----------
+    iterations : int, optional
+        Number of iterations to run the flow. Default is 10.
+    reward_threshold : float, optional
+        Reward threshold for terminating the flow. Default is None.
+    operator : str, optional
+        Operator to use for comparing rewards. Default is GREATER_THAN_THRESHOLD.
+    num_generators : int, optional
+        Number of generator tasks. Default is 2.
+    num_scorers : int, optional
+        Number of scorer tasks. Default is 2.
+    """
     def __init__(
         self,
         iterations: Optional[int] = 10,
@@ -23,7 +37,22 @@ class SequentialFlowConfig():
         self.num_scorers = num_scorers
 
 class SequentialFlow(Workflow):
-    """Single iterative RL flow backed by ROSE's SequentialReinforcementLearner."""
+    """Single iterative RL flow backed by ROSE's SequentialReinforcementLearner.
+    
+    Parameters
+    ----------
+    model_config : ModelConfig
+        Model configuration for the model and tokenizer
+    trainer : Trainer
+        Training algorithm (e.g. ``GRPO``, ``SFT``).
+    evaluate_func : Callable, optional
+        Per-iteration evaluation function. Plain -> run inline;
+        decorated with ``@Workflow.evaluate_task`` -> run as a task
+        Returns a scalar that drives the stop criterion when
+        ``flow_config.reward_threshold`` is set.
+    asyncflow : WorkflowEngine, optional
+        Pre-existing radical.asyncflow engine.
+    """
 
     def __init__(
         self,
@@ -44,7 +73,7 @@ class SequentialFlow(Workflow):
         self.flow_config = flow_config
         self._generator_tasks = []
         self._scorer_tasks = []
-    
+
     async def _generation_schedule(self, workflow_ddict, terminate_event: Event):
         submitted_requests = []
         while not terminate_event.is_set():

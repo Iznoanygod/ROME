@@ -7,6 +7,27 @@ from rome.trainer import Trainer
 from dragon.data.ddict import DDict
 
 class GRPO(Trainer):
+    """GRPO trainer. See ``GRPOTrainer`` for the underlying implementation of the GRPO algorithm, and ``GRPOConfig`` for training knobs.
+    
+    Parameters
+    ----------
+    gpus : int
+        Number of GPUs to use for training.
+    dataset : Dataset
+        Dataset to use for training.
+    reward_funcs : List[Callable]
+        List of reward functions to use for training.
+        Reward functions run inside the trainer unless marked with the @Workflow.reward_task decorator,
+        in which case they are processed by the workflow
+    trainer_callbacks : Optional[List[Any]]
+        List of callbacks for the trainer.
+    rollout_func : Optional[Callable]
+        Rollout function for generating trajectories. 
+        If not provided, the default rollout function is used.
+    grpo_config : Optional[GRPOConfig]
+        Configuration for the GRPO trainer.
+        If not provided, ROME defaults are used.
+    """
     def __init__(
         self,
         *,
@@ -65,8 +86,10 @@ class GRPO(Trainer):
         from datasets import load_dataset
         self._workflow_ddict = workflow_ddict
         # load model, tokenizer
-        model, tokenizer = self.load_model(model_config)
-
+        model, tokenizer = load_model(model_config)
+        local_reward_funcs = []
+        flow_reward_funcs = []
+        #figure out reward functions, check which are supposed to be used for training or evaluation
         if use_default_rollout:
             trainer = GRPOTrainer(
                 model=model,

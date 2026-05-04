@@ -2,13 +2,20 @@ from typing import Callable, List, Optional, Dict, Any
 import typeguard
 
 class Trainer:
-    """
+    """Abstract base class for ROME training algorithms.
+    
     Parameters
     ----------
     gpus_per_node : int
         GPUs per node.
+    dataset: Dataset
+        Dataset to use for training
     seed : int
         Random seed forwarded to the underlying TRL trainer.
+    reward_funcs : List[Callable]
+        List of reward functions to use for training.
+        Reward functions run inside the trainer unless marked with the @Workflow.reward_task decorator,
+        in which case they are expected to be launched as tasks by the workflow
     """
     def __init__(
         self,
@@ -22,6 +29,17 @@ class Trainer:
         self._reward_funcs = reward_funcs or []
 
     def train(self, model_config: ModelConfig, **kwargs):
-        """Train the model for one training step."""
+        """Execute training for the mode.
+
+        Uses model_config for loading the model and tokenizer, as well as generation
+        parameters. reward_funcs are passed to the model trainer to run on the trainer task
+        unless marked with the @Workflow.reward_task decorator, in which case the workflow
+        is responsible for launching them as tasks and passing the results back to the trainer.
+        
+        Parameters
+        ----------
+        model_config : ModelConfig
+            Model configuration for the model and tokenizer
+        """
         raise NotImplementedError("Trainer.train() must be implemented by subclasses.")
 

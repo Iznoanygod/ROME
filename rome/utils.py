@@ -1,6 +1,7 @@
 from rome.config import ModelConfig
 
 def load_model(model_config: ModelConfig):
+    """Load model and tokenizer according to the provided model configuration."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
