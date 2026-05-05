@@ -20,7 +20,7 @@ class SequentialFlowConfig():
     num_generators : int, optional
         Number of generator tasks. Default is 2.
     num_scorers : int, optional
-        Number of scorer tasks. Default is 2.
+        Number of scorer tasks for each reward function. Default is 2.
     """
     def __init__(
         self,
@@ -74,6 +74,21 @@ class SequentialFlow(Workflow):
         self._generator_tasks = []
         self._scorer_tasks = []
 
+    def _default_generator_func(prompts: list[str], model, tokenizer, generation_config):
+        inputs = tokenizer.apply_chat_template(
+            prompts, 
+            add_generation_prompt=True, 
+            tokenize=True, 
+            padding=True, 
+            return_tensors="pt"
+        ).to(model.device)
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs,
+                generation_config=generation_config,
+            )
+            return outputs
+        
     async def _generation_schedule(self, workflow_ddict, terminate_event: Event):
         submitted_requests = []
         while not terminate_event.is_set():
@@ -83,8 +98,8 @@ class SequentialFlow(Workflow):
                 if request_id not in submitted_requests:
                     requests_to_submit.append(request_id)
             # balance requests between generators
-            generator_queues = (workflow_ddict[f"generator_{i}_input"] for i in range(self.flow_config.num_generators))
-            for request in requests_to_submit:
+            generator_queues = [workflow_ddict[f"generator_{i}_input"] for i in range(self.flow_config.num_generators)]
+            for request_id in requests_to_submit:
                 # find generator with shortest queue
                 shortest_queue = min(generator_queues, key=lambda q: len(q))
                 shortest_queue[request_id] = generation_requests[request_id]
@@ -92,6 +107,29 @@ class SequentialFlow(Workflow):
             # update generator queues in workflow_ddict
             for i in range(self.flow_config.num_generators):
                 workflow_ddict[f"generator_{i}_input"] = generator_queues[i]
+
+    async def _scorer_schedule(self, workflow_ddict, terminate_event: Event):
+        submitted_requests = []
+        while not terminate_event.is_set():
+            requests_to_submit = []
+            generator_outputs = workflow_ddict["generator_outputs"]
+            for request_id in generator_outputs.keys():
+                if request_id not in submitted_requests:
+                    requests_to_submit.append(request_id)
+            
+            scorer_queues = {}
+            for reward_func in self.trainer.reward_funcs:
+                scorer_queues[reward_func.__name__] = [workflow_ddict[f"reward_{reward_func.__name__}_{i}_input"] for i in range(self.flow_config.num_scorers)]
+
+            for request_id in requests_to_submit:
+                for reward_func in self.trainer.reward_funcs:
+                    # find scorer with shortest queue for this reward func
+                    shortest_queue = min(scorer_queues[reward_func.__name__], key=lambda q: len(q))
+                    shortest_queue[request_id] = generator_outputs[request_id]
+                submitted_requests.append(request_id)
+            for i in range(self.flow_config.num_scorers):
+                for reward_func in self.trainer.reward_funcs:
+                    workflow_ddict[f"reward_{reward_func.__name__}_{i}_input"] = scorer_queues[reward_func.__name__][i]
 
     async def _generation_gather(self, workflow_ddict, terminate_event: Event):
         while not terminate_event.is_set():
@@ -106,6 +144,20 @@ class SequentialFlow(Workflow):
                         generator_outputs[request_id] = output_dict[request_id]
                     
             workflow_ddict["generator_outputs"] = generator_outputs
+
+    async def _scorer_gather(self, workflow_ddict, terminate_event: Event):
+        while not terminate_event.is_set():
+            for reward_func in self.trainer.reward_funcs:
+                scorer_outputs = workflow_ddict[f"reward_{reward_func.__name__}_outputs"]
+                for i in range(self.flow_config.num_scorers):
+                    output_key = f"reward_{reward_func.__name__}_{i}_output"
+                    output_dict = workflow_ddict[output_key]
+                    for request_id in output_dict.keys():
+                        if request_id not in scorer_outputs:
+                            scorer_outputs[request_id] = output_dict[request_id]
+                    
+                workflow_ddict[f"reward_{reward_func.__name__}_outputs"] = scorer_outputs
+
 
     async def launch(self, iterations: Optional[int] = None) -> None:
         """Start the sequential RL loop.
@@ -143,24 +195,38 @@ class SequentialFlow(Workflow):
                 if len(requests_to_process) > 0:
                     for i in range(0, len(requests_to_process), batch_size):
                         batch = requests_to_process[i:i+batch_size]
-                        # generate outputs for batch'
+                        # generate outputs for batch
                         prompts = [requests[request_id] for request_id in batch]
                         outputs = _default_generator_func(prompts, model, tokenizer, model_config.generation_config)
 
                         # put outputs in workflow_ddict
                         output_dict = _workflow_ddict[_output_key]
-                        for request_id, output in zip(batch, outputs):
-                            output_dict[request_id] = output
-                            generated_requests.append(request_id)
+                        # need to extract from model outputs and put in output dict
+                        transition_scores = model.compute_transition_scores(outputs.sequences, outputs.scores, normalize_logits=True)
+                        sequences = outputs.sequences.cpu().numpy()
+                        prompt_ids = tokenizer.apply_chat_template(
+                            prompts, 
+                            add_generation_prompt=True, 
+                            tokenize=True, 
+                            padding=False, 
+                            return_tensors=None
+                        )
+                        for j, request_id in enumerate(batch):
+                            output_dict[request_id] = {
+                                "prompt_ids": prompt_ids[j],
+                                "completion_ids": outputs.sequences[j],
+                                "logprobs": transition_scores[j],
+                            }
+                            
                         _workflow_ddict[_output_key] = output_dict
                         
         @asyncflow.function_task
-        async def scorer_task():
+        async def scorer_task(reward_func, _terminate_event, _workflow_ddict, _input_key, _output_key):
             scored_requests = []
 
             while not _terminate_event.is_set():
                 requests_to_score = []
-                generator_outputs = workflow_ddict["generator_outputs"]
+                generator_outputs = _workflow_ddict[_input_key]
                 for request_id in generator_outputs.keys():
                     if request_id in scored_requests:
                         continue
@@ -171,16 +237,16 @@ class SequentialFlow(Workflow):
                 if len(requests_to_score) > 0:
                     for request_id in requests_to_score:
                         output = generator_outputs[request_id]
-                        score = _default_scorer_func(output)
+                        score = reward_func(output)
                         scored_requests.append(request_id)
                         
         
         @rl.update_task(as_executable=False)
-        async def train_model(self.model_config, _workflow_ddict):
-            return await trainer.train(self.model_config)
+        async def train_model(self.model_config, workflow_ddict=workflow_ddict):
+            return await trainer.train(self.model_config, workflow_ddict=workflow_ddict)
 
         @rl.as_stop_criterion(metric_name='MODEL_REWARD', threshold=128, operator=GREATER_THAN_THRESHOLD, as_executable=False)
-        async def check_reward():
+        async def test_model():
             return await self.evaluate_func(self.model_config)
 
         # start generators
@@ -193,14 +259,27 @@ class SequentialFlow(Workflow):
                 _input_key=f"generator_{i}_input",
                 _output_key=f"generator_{i}_output",
             ))
-        
-        for i in range(self.flow_config.num_scorers):
-            self._scorer_tasks.append(scorer_task())
-        
+        #start scorers
+        reward_funcs = self.trainer.reward_funcs
+        reward_task_funcs = [reward_func for reward_func in reward_funcs if hasattr(reward_func, "_is_reward_task")]
 
-        # start scorers if needed
         for i in range(self.flow_config.num_scorers):
-            self._scorer_tasks.append()
+            for reward_func in reward_task_funcs:
+                self._scorer_tasks.append(scorer_task(
+                    reward_func=reward_func,
+                    _workflow_ddict=workflow_ddict,
+                    _terminate_event=terminate_event,
+                    _input_key=f"reward_{reward_func.__name__}_{i}_input",
+                    _output_key=f"reward_{reward_func.__name__}_{i}_output",
+                ))
+
+        # start generator scheduler and gatherer 
+        schedule_gather_fut = asyncio.gather(
+            self._generation_schedule(workflow_ddict, terminate_event),
+            self._generation_gather(workflow_ddict, terminate_event),
+            self._scorer_schedule(workflow_ddict, terminate_event),
+            self._scorer_gather(workflow_ddict, terminate_event),
+        )
 
         async for state in rl.start():
             print(f"Iteration {state.iteration}: metric={state.metric_value}")

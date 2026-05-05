@@ -43,6 +43,10 @@ def load_model(model_config: ModelConfig):
             model = get_peft_model(model, lora_config)
     return model, tokenizer
 
+def reload_lora(model, model_config: ModelConfig):
+    pass
+
+
 def save_model(model, model_config: ModelConfig):
     pass
 
