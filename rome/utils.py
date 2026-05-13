@@ -1,3 +1,5 @@
+import os
+
 from rome.config import ModelConfig
 
 def load_model(model_config: ModelConfig):

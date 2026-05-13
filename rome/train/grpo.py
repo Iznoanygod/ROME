@@ -1,10 +1,18 @@
+import asyncio
 import os
 import logging
+import time
 from pathlib import Path
-from typing import Callable, List, Optional, Dict, Any
-from rome.trainer import Trainer
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
-from dragon.data.ddict import DDict
+from trl import GRPOConfig, GRPOTrainer
+
+from rome.config import ModelConfig
+from rome.trainer import Trainer
+from rome.utils import load_model
+
+if TYPE_CHECKING:
+    from dragon.data.ddict import DDict
 
 class GRPO(Trainer):
     """GRPO trainer. See ``GRPOTrainer`` for the underlying implementation of the GRPO algorithm, and ``GRPOConfig`` for training knobs.
@@ -87,7 +95,7 @@ class GRPO(Trainer):
         
 
     # default rollout_func to use for GRPO when none is provided and using generator tasks
-    def _default_rollout_func(prompts: list[str], trainer: GRPOTrainer, **kwargs):
+    def _default_rollout_func(self, prompts: list[str], trainer: GRPOTrainer, **kwargs):
         import uuid
         # give each prompt a request_id, put in the workflow_ddict
         workflow_ddict = self._workflow_ddict
@@ -123,7 +131,7 @@ class GRPO(Trainer):
             "request_ids": request_ids,
         }
 
-    def train(self, model_config: ModelConfig, workflow_ddict: DDict, use_default_rollout=True, **kwargs):
+    def train(self, model_config: ModelConfig, workflow_ddict: "DDict", use_default_rollout=True, **kwargs):
         from datasets import load_dataset
         self._workflow_ddict = workflow_ddict
         # load model, tokenizer

@@ -1,10 +1,19 @@
-from rome.workflow import Workflow
-from rose.metrics import GREATER_THAN_THRESHOLD
+import asyncio
+from typing import Any, Callable, Optional
 
+import torch
+from radical.asyncflow import WorkflowEngine
+from rose.learner import SequentialReinforcementLearner
+from rose.metrics import GREATER_THAN_THRESHOLD
 from transformers import GenerationConfig
 
-from dragon.native.event import Event
 from dragon.data.ddict import DDict
+from dragon.native.event import Event
+
+from rome.config import ModelConfig
+from rome.trainer import Trainer
+from rome.utils import load_model
+from rome.workflow import Workflow
 
 class SequentialFlowConfig():
     """Configuration for SequentialFlow.
@@ -21,6 +30,8 @@ class SequentialFlowConfig():
         Number of generator tasks. Default is 2.
     num_scorers : int, optional
         Number of scorer tasks for each reward function. Default is 2.
+    batch_size : int, optional
+        Generator batch size. Default is 4.
     """
     def __init__(
         self,
@@ -29,12 +40,14 @@ class SequentialFlowConfig():
         operator: Optional[str] = GREATER_THAN_THRESHOLD,
         num_generators: int = 2,
         num_scorers: int = 2,
+        batch_size: int = 4,
     ):
         self.iterations = iterations
         self.reward_threshold = reward_threshold
         self.operator = operator
         self.num_generators = num_generators
         self.num_scorers = num_scorers
+        self.batch_size = batch_size
 
 class SequentialFlow(Workflow):
     """Single iterative RL flow backed by ROSE's SequentialReinforcementLearner.
@@ -172,6 +185,11 @@ class SequentialFlow(Workflow):
         # create shared dictionary for workflows
         workflow_ddict = DDict()
         terminate_event = Event()
+        asyncflow = self.asyncflow
+        rl = self.rl
+        trainer = self.trainer
+        model_config = self.model_config
+        evaluate_func = self.evaluate_func
 
         @asyncflow.function_task
         async def generation_task(model_config, batch_size, _terminate_event, _workflow_ddict, _input_key, _output_key):
@@ -183,9 +201,9 @@ class SequentialFlow(Workflow):
             
             while not _terminate_event.is_set():
                 requests_to_process = []
-                # request_ids is dictionary request_id -> prompt
+                # requests is dictionary request_id -> prompt
                 requests = _workflow_ddict[_input_key]
-                for request_id in request_ids.keys():
+                for request_id in requests.keys():
                     if request_id in generated_requests:
                         continue
                     # add to processing list
@@ -242,12 +260,12 @@ class SequentialFlow(Workflow):
                         
         
         @rl.update_task(as_executable=False)
-        async def train_model(self.model_config, workflow_ddict=workflow_ddict):
-            return await trainer.train(self.model_config, workflow_ddict=workflow_ddict)
+        async def train_model(model_config=model_config, workflow_ddict=workflow_ddict):
+            return await trainer.train(model_config, workflow_ddict=workflow_ddict)
 
         @rl.as_stop_criterion(metric_name='MODEL_REWARD', threshold=128, operator=GREATER_THAN_THRESHOLD, as_executable=False)
         async def test_model():
-            return await self.evaluate_func(self.model_config)
+            return await evaluate_func(model_config)
 
         # start generators
         for i in range(self.flow_config.num_generators):

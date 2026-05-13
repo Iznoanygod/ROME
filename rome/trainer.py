@@ -1,5 +1,6 @@
-from typing import Callable, List, Optional, Dict, Any
-import typeguard
+from typing import Any, Callable, Dict, List, Optional
+
+from rome.config import ModelConfig
 
 class Trainer:
     """Abstract base class for ROME training algorithms.
@@ -27,6 +28,10 @@ class Trainer:
         self._gpus = gpus
         self._dataset = dataset
         self._reward_funcs = reward_funcs or []
+
+    @property
+    def reward_funcs(self) -> List[Callable]:
+        return self._reward_funcs
 
     def train(self, model_config: ModelConfig, **kwargs):
         """Execute training for the mode.

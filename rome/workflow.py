@@ -1,7 +1,9 @@
+from typing import Any, Callable
+
 from radical.asyncflow import WorkflowEngine
 
-from rome.config import ModelConfig, SequentialFlowConfig
-from rome.trainer import Trainer, TrainerResult
+from rome.config import ModelConfig
+from rome.trainer import Trainer
 
 class Workflow():
     """Abstract base class for ROME flows.

@@ -1,6 +1,9 @@
 import os
 import logging
-import pathlib import Path
+from pathlib import Path
+from typing import Any, Callable, List, Optional
+
+from trl import SFTConfig
 
 from rome.trainer import Trainer
 

@@ -1,4 +1,7 @@
 from dataclasses import dataclass, field
+from typing import Any, List, Optional
+
+from transformers import GenerationConfig
 
 @dataclass
 class LoRAConfig:

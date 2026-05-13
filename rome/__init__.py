@@ -1,10 +1,8 @@
-from rome.train import grpo#, sft
-from rome.model import Model
+from rome.train import grpo, sft
 from rome.workflow import Workflow
 
 __all__ = [
-    "grpo", 
-#    "sft", 
-    "Model", 
+    "grpo",
+    "sft",
     "Workflow",
 ]
