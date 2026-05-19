@@ -1,6 +1,6 @@
 from typing import Any, Callable, Dict, List, Optional
 from rome.config import ModelConfig
-
+from datasets import Dataset
 class Trainer:
     """Abstract base class for ROME training algorithms.
     

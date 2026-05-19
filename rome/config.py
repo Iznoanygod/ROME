@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
-
+from peft import LoraConfig
 from transformers import GenerationConfig
 @dataclass
 class ModelConfig:
@@ -19,7 +19,7 @@ class ModelConfig:
     base_model_name: Optional[str] = None
     model_name: Optional[str] = None
     lora_name: Optional[str] = None
-    lora_config: Optional[LoRAConfig] = None
+    lora_config: Optional[LoraConfig] = None
     generation_config: Optional[GenerationConfig] = None
     dtype: Optional[str] = "auto"
     required_gpus: int = 1

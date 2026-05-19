@@ -10,7 +10,7 @@ from trl import GRPOConfig, GRPOTrainer
 from rome.config import ModelConfig
 from rome.trainer import Trainer
 from rome.utils import load_model
-from Datasets import dataset
+from datasets import Dataset
 
 from dragon.data.ddict import DDict
 
