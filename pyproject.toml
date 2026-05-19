@@ -15,7 +15,7 @@ maintainers = [
     {name = "Andrew Park", email = "andrew.park2@rutgers.edu"},
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 
 dependencies = [
     "numpy",

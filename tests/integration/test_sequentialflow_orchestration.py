@@ -29,7 +29,7 @@ class OneShotEvent:
 
 
 def _make_flow(*, reward_funcs=(), num_generators=2, num_scorers=2):
-    trainer = Trainer(gpus=1, dataset=None, reward_funcs=list(reward_funcs))
+    trainer = Trainer(gpus=1, reward_funcs=list(reward_funcs))
     flow = SequentialFlow(
         model_config=ModelConfig(),
         trainer=trainer,

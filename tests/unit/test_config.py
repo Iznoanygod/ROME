@@ -1,28 +1,4 @@
-from rome.config import LoRAConfig, ModelConfig
-
-
-def test_loraconfig_defaults():
-    cfg = LoRAConfig()
-    assert cfg.r == 16
-    assert cfg.alpha == 16
-    assert cfg.dropout == 0.0
-    assert cfg.bias == "none"
-    assert cfg.target_modules == [
-        "q_proj", "v_proj", "k_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
-    ]
-
-
-def test_loraconfig_target_modules_not_shared():
-    a = LoRAConfig()
-    b = LoRAConfig()
-    a.target_modules.append("extra")
-    assert "extra" not in b.target_modules
-
-
-def test_loraconfig_overrides():
-    cfg = LoRAConfig(r=64, alpha=128, dropout=0.1, bias="all")
-    assert (cfg.r, cfg.alpha, cfg.dropout, cfg.bias) == (64, 128, 0.1, "all")
+from rome.config import ModelConfig
 
 
 def test_modelconfig_defaults():

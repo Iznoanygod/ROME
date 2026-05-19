@@ -16,7 +16,7 @@ from rome.train import GRPO
 
 
 def _make_grpo(reward_funcs):
-    return GRPO(gpus=1, dataset=None, reward_funcs=reward_funcs)
+    return GRPO(gpus=1, reward_funcs=reward_funcs)
 
 
 def test_grpo_default_config_built_when_none():
@@ -29,7 +29,7 @@ def test_grpo_default_config_built_when_none():
 
 def test_grpo_custom_config_preserved():
     sentinel = object()
-    g = GRPO(gpus=1, dataset=None, reward_funcs=[], grpo_config=sentinel)
+    g = GRPO(gpus=1, reward_funcs=[], grpo_config=sentinel)
     assert g._grpo_config is sentinel
 
 
@@ -38,7 +38,6 @@ def test_grpo_stores_callbacks_and_rollout():
     rf = object()
     g = GRPO(
         gpus=1,
-        dataset=None,
         reward_funcs=[],
         trainer_callbacks=[cb],
         rollout_func=rf,
