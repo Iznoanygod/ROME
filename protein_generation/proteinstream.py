@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 
 import multiprocessing as mp
 
-os.environ["HF_TOKEN"] = "hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+os.environ["HF_TOKEN"] = ""
 os.environ["HF_HOME"] = "/work/nvme/bdyk/apark4/huggingface"
 foldseek_path = "/work/hdd/bdyk/apark4/foldseek/bin/foldseek"
 colabfold_path = "/work/nvme/bdyk/apark4/localcolabfold/.pixi/envs/default/bin/colabfold_batch"
-runfold_path = "/work/nvme/bdyk/apark4/ROME/run_fold.sh"
-runsingularity_path = "/work/nvme/bdyk/apark4/ROME/run_singularity.sh"
+runfold_path = "/work/nvme/bdyk/apark4/ROME/protein_generation/run_fold.sh"
+runsingularity_path = "/work/nvme/bdyk/apark4/ROME/protein_generation/run_singularity.sh"
 tmp_dir = "/tmp"
 colabfold_sif_path = "/work/nvme/bdyk/apark4/ROME/colabfold_1.6.0-cuda12.sif"
 fold_cache = "/work/hdd/bdyk/apark4/foldcache"
@@ -312,6 +312,7 @@ async def main():
                         #    fam_seq_ddict[sequence] = {"prompt_id": original_prompt_id, "tokens":tokens, "logp":logp, "superfamily": superfamily}
                         ddict = fam_seq_ddicts[superfamily]
                         ddict[sequence] = {"prompt_id": original_prompt_id, "tokens":tokens, "logp":logp, "superfamily": superfamily}
+                        eprint(f"{_hostname}:generated")
                         #eprint(f"Generated sequence {sequence}")
             
         del model
@@ -529,19 +530,14 @@ async def main():
 
     trainer_process_template = {"process_template": {"policy": trainer_task_policy}}
     @flow.function_task
-    async def grpo_trainer(scored_fam_seq_ddict, _started_event, _failed_event, _hostname, _terminate_event, task_description=trainer_process_template):
+    async def grpo_trainer(scored_fam_seq_ddict, _terminate_event, task_description=trainer_process_template):
         import sys
         def eprint(str):
             sys.stderr.write(str + "\n")
             sys.stderr.flush()
         #sys.stderr.write("test")
         import logging, os, re, socket
-        if socket.gethostname() != _hostname:
-            eprint(f"generate_seq_epgf unexpected host {socket.gethostname()}, expected {_hostname}. Terminating")
-            print(f"generate_seq_epgf unexpected host {socket.gethostname()}, expected {_hostname}. Terminating")
-            _failed_event.set()
-            return -1
-        _started_event.set()
+        
         # Force single-node single-process distributed setup
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = "29500"
@@ -1105,7 +1101,7 @@ async def main():
     #fsl_fut = fold_seq_listen_launch( generated_families_ddict, folded_families_ddict, _folding_terminate, _iteration_reset)
     #sfl_fut = score_family_listen_launch( folded_families_ddict, scored_families_ddict, _scoring_terminate, _iteration_reset, seq_ddict=generated_sequences_ddict)
     #listener_fut = asyncio.gather(gsl_fut, fsl_fut, sfl_fut)
-    await asyncio.gather(*generator_tasks)
+    #await asyncio.gather(*generator_tasks)
     
     print(f"Submitting grpo_trainer with GPU {trainer_task_gpu[1]} on {trainer_task_gpu[0]}", flush=True)
     trainer = grpo_trainer(superfamily_seq_ddict, _terminate)

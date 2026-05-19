@@ -1,5 +1,5 @@
-from typing import Callable, List, Optional, Dict, Any
-import typeguard
+from typing import Any, Callable, Dict, List, Optional
+from rome.config import ModelConfig
 
 class Trainer:
     """Abstract base class for ROME training algorithms.
@@ -8,8 +8,6 @@ class Trainer:
     ----------
     gpus_per_node : int
         GPUs per node.
-    dataset: Dataset
-        Dataset to use for training
     seed : int
         Random seed forwarded to the underlying TRL trainer.
     reward_funcs : List[Callable]
@@ -21,14 +19,17 @@ class Trainer:
         self,
         *,
         gpus: int = 1,
-        dataset,
         reward_funcs: List[Callable],
     ) -> None:
         self._gpus = gpus
-        self._dataset = dataset
         self._reward_funcs = reward_funcs or []
 
-    def train(self, model_config: ModelConfig, **kwargs):
+    @property
+    def reward_funcs(self) -> List[Callable]:
+        return self._reward_funcs
+
+
+    def train(self, model_config: ModelConfig, dataset: Dataset, **kwargs):
         """Execute training for the mode.
 
         Uses model_config for loading the model and tokenizer, as well as generation

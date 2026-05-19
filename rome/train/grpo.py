@@ -1,8 +1,16 @@
+import asyncio
 import os
 import logging
+import time
 from pathlib import Path
-from typing import Callable, List, Optional, Dict, Any
+from typing import Any, Callable, Dict, List, Optional
+
+from trl import GRPOConfig, GRPOTrainer
+
+from rome.config import ModelConfig
 from rome.trainer import Trainer
+from rome.utils import load_model
+from Datasets import dataset
 
 from dragon.data.ddict import DDict
 
@@ -13,8 +21,6 @@ class GRPO(Trainer):
     ----------
     gpus : int
         Number of GPUs to use for training.
-    dataset : Dataset
-        Dataset to use for training.
     reward_funcs : List[Callable]
         List of reward functions to use for training.
         Reward functions run inside the trainer unless marked with the @Workflow.reward_task decorator,
@@ -32,13 +38,12 @@ class GRPO(Trainer):
         self,
         *,
         gpus: int = 1,
-        dataset,
         reward_funcs: List[Callable],
         trainer_callbacks: Optional[List[Any]] = None,
         rollout_func: Optional[Callable] = None,
         grpo_config: Optional[GRPOConfig] = None,
     ):
-        super().__init__(gpus=gpus, dataset=dataset, reward_funcs=reward_funcs)
+        super().__init__(gpus=gpus, reward_funcs=reward_funcs)
         self._trainer_callbacks = trainer_callbacks
         self._rollout_func = rollout_func
         self._grpo_config = grpo_config
@@ -87,7 +92,7 @@ class GRPO(Trainer):
         
 
     # default rollout_func to use for GRPO when none is provided and using generator tasks
-    def _default_rollout_func(prompts: list[str], trainer: GRPOTrainer, **kwargs):
+    def _default_rollout_func(self, prompts: list[str], trainer: GRPOTrainer, **kwargs):
         import uuid
         # give each prompt a request_id, put in the workflow_ddict
         workflow_ddict = self._workflow_ddict
@@ -123,7 +128,7 @@ class GRPO(Trainer):
             "request_ids": request_ids,
         }
 
-    def train(self, model_config: ModelConfig, workflow_ddict: DDict, use_default_rollout=True, **kwargs):
+    def train(self, model_config: ModelConfig, dataset: Dataset, workflow_ddict: DDict, use_default_rollout=True, **kwargs):
         from datasets import load_dataset
         self._workflow_ddict = workflow_ddict
         # load model, tokenizer
@@ -145,7 +150,7 @@ class GRPO(Trainer):
                 reward_funcs=local_reward_funcs,
                 callbacks=self._trainer_callbacks,
                 args=self._grpo_config,
-                train_dataset=self._dataset,
+                train_dataset=dataset,
             )
         else:
             trainer = GRPOTrainer(
@@ -155,7 +160,7 @@ class GRPO(Trainer):
                 reward_funcs=local_reward_funcs,
                 callbacks=self._trainer_callbacks,
                 args=self._grpo_config,
-                train_dataset=self._dataset,
+                train_dataset=dataset,
             )
 
         trainer.train()

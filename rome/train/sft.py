@@ -28,6 +28,7 @@ class SFT(Trainer):
                 lr_scheduler_type = "cosine",
                 optim = "adamw_8bit",
                 logging_steps=1,
+                num_train_epochs=3,
 
                 # how many to process at once per gpu
                 per_device_train_batch_size=4,
@@ -35,7 +36,8 @@ class SFT(Trainer):
                 # how many steps to accumulate
                 gradient_accumulation_steps=16,
 
-                num_train_epochs=3,
             )
         self._top_p = top_p
 
+    def train(self, model_config: ModelConfig, workflow_ddict: DDict, **kwargs):
+        pass

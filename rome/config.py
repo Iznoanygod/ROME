@@ -1,21 +1,7 @@
 from dataclasses import dataclass, field
+from typing import Any, List, Optional
 
-@dataclass
-class LoRAConfig:
-    """LoRA / PEFT adapter knobs applied during model load.
-    """
-
-    r: int = 16
-    alpha: int = 16
-    dropout: float = 0.0
-    bias: str = "none"
-    target_modules: List[str] = field(
-        default_factory=lambda: [
-            "q_proj", "v_proj", "k_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ]
-    )
-
+from transformers import GenerationConfig
 @dataclass
 class ModelConfig:
     """Model configurations used for loading the model and tokenizer, as well as generation.

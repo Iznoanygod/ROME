@@ -18,17 +18,17 @@ logger = logging.getLogger(__name__)
 
 import multiprocessing as mp
 
-os.environ["HF_TOKEN"] = "hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+os.environ["HF_TOKEN"] = ""
 os.environ["HF_HOME"] = "/work/nvme/bdyk/apark4/huggingface"
 foldseek_path = "/work/hdd/bdyk/apark4/foldseek/bin/foldseek"
 colabfold_path = "/work/nvme/bdyk/apark4/localcolabfold/.pixi/envs/default/bin/colabfold_batch"
-runfold_path = "/work/nvme/bdyk/apark4/ROME/run_fold.sh"
-runsingularity_path = "/work/nvme/bdyk/apark4/ROME/run_singularity.sh"
+runfold_path = "/work/nvme/bdyk/apark4/ROME/protein_generation/run_fold.sh"
+runsingularity_path = "/work/nvme/bdyk/apark4/ROME/protein_generation/run_singularity.sh"
 tmp_dir = "/tmp"
 colabfold_sif_path = "/work/nvme/bdyk/apark4/ROME/colabfold_1.6.0-cuda12.sif"
 fold_cache = "/work/hdd/bdyk/apark4/foldcache"
 foldseekdb_path = "/work/hdd/bdyk/apark4/foldseek/afdb50"
-storage_path = "/work/hdd/bdyk/apark4/ROME/storage"
+storage_path = "/work/hdd/bdyk/apark4/ROME/storagenew"
 
 generation_task_batch_size = 4
 prompt_gen_batch_size = 2
@@ -235,6 +235,7 @@ async def main():
         with torch.no_grad():
             i = 0
             #gennerate num_seq protein sequences
+            eprint("good sign")
             while i < num_seq:
                 temperature = initial_temperature
                 failed = False
@@ -795,7 +796,7 @@ async def main():
             report_to = "none", # Can use Weights & Biases
             run_name=f"prolora-rome",
             output_dir = lora_id,
-            overwrite_output_dir=True,
+            #overwrite_output_dir=True,
         )
         eprint("Created grpo config")
         # each process receives: per_device_train_batch_size unique prompts
@@ -861,7 +862,7 @@ async def main():
                 "logprobs": logprobs,
             }
     
-        async def sequence_reward(prompts, completions, seq_ddict=scored_ddict, **kwargs):
+        def sequence_reward(prompts, completions, seq_ddict=scored_ddict, **kwargs):
             rewards = []
             prev_prompt=""
             eprint(f"sequence_reward began with {len(completions)} completions")
@@ -873,7 +874,7 @@ async def main():
                     if waiting_msg != prev_prompt:
                         eprint(waiting_msg)
                         prev_prompt = waiting_msg
-                    await asyncio.sleep(1)
+                    time.sleep(1)
                 seq_scores = seq_ddict[seq]
                 #eprint(seq)
                 #eprint(str(seq_scores))
@@ -945,7 +946,7 @@ async def main():
                 eprint(f"Submitted generation for family {family} on {gpu_alloc[0]} with {gpu_alloc[1]}")
                 generated_families.append(family)
                 gen_task_futures.append(gen_task)
-            logger.info("gen_seq_listen_launch sleeping")
+            #eprint("gen_seq_listen_launch sleeping")
             await asyncio.sleep(1)
         eprint(f"Terminate event set for gen_seq_listen_launch, waiting for generation tasks to complete")
         await asyncio.gather(*gen_task_futures)
