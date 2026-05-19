@@ -39,9 +39,9 @@ test = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "slow: end-to-end tests that download a model and run training (opt in with -m slow)",
+    "fast: unit, smoke, and mocked-integration tests (default for any test not marked slow)",
+    "slow: end-to-end tests that download a model and run training",
 ]
-addopts = "-m 'not slow'"
 
 [tool.setuptools.packages.find]
 include = ["rome*"]

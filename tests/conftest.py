@@ -10,6 +10,21 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tag every test that isn't explicitly `slow` as `fast`.
+
+    Lets callers pick:
+        pytest                 # run everything
+        pytest -m fast         # unit + smoke + mocked-integration
+        pytest -m slow         # the heavyweight end-to-end test
+    """
+    for item in items:
+        if "slow" not in item.keywords:
+            item.add_marker(pytest.mark.fast)
+
 
 class _StubConfig:
     """Drop-in stand-in for trl.GRPOConfig / trl.SFTConfig.
