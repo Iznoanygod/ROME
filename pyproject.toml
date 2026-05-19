@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ROME"
+version = "0.0.1"
+description = "RADICAL Optimizer for Model Enhancement"
+
+authors = [
+    {name = "Andrew Park", email = "andrew.park2@rutgers.edu"},
+    {name = "RADICAL Lab"},
+]
+maintainers = [
+    {name = "Andrew Park", email = "andrew.park2@rutgers.edu"},
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy",
+    "torch",
+    "transformers",
+    "peft",
+    "trl",
+    "datasets",
+    "biopython==1.80",
+    "radical.asyncflow",
+    "rhapsody-py[radical_pilot]",
+    'rhapsody-py[dragon]; python_version >= "3.10" and python_version <= "3.12"',
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "pytest-mock",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "fast: unit, smoke, and mocked-integration tests (default for any test not marked slow)",
+    "slow: end-to-end tests that download a model and run training",
+]
+
+[tool.setuptools.packages.find]
+include = ["rome*"]

@@ -302,7 +302,7 @@ with torch.no_grad():
 
             candidates = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
             transition_scores = model.compute_transition_scores(outputs.sequences, outputs.scores, normalize_logits=True)
-            log_probs = transition_scores.sum(dim=1).cpu().numpy().tolist()
+            log_probs = transition_scores.sum(dim=1).cpu().numpy().tolist() # log prob used as score
 
             candidates_with_scores = [(candidates[idx], log_probs[idx]) for idx in range(len(candidates))]
             candidates_with_scores.sort(key=lambda x: x[1], reverse=True)
