@@ -1,34 +1,28 @@
 """Protein generation GRPO baseline — no asyncflow / rhapsody / dragon.
 
-Uses stock TRL GRPOTrainer with no custom rollout_func, so it works correctly
-under ``accelerate launch`` for multi-GPU and multi-node training.
+Uses a custom ``rollout_func`` to implement the original EPGF generation
+strategy: at every token step, sample N candidates, score each partial
+sequence with ProteinSequenceScorer, and select the next token via
+softmax-weighted sampling over the bio scores.
 
-EPGF-style constrained generation is implemented as a HuggingFace
-``LogitsProcessor``, which is called at every token step and is fully
-DDP-compatible (each rank applies it independently to its local shard).
+DDP / multi-GPU compatibility
+------------------------------
+``rollout_func`` is DDP-safe here because generation is entirely local to
+each rank — there is no coordination with external generator tasks.  Each
+rank calls EPGF on its own copy of the model for its own batch shard.
+Gradient sync happens in the backward pass as normal.
 
-The constraints applied per-token are:
-  1. Vocabulary masking  — only valid amino-acid tokens and the closing ">"
-     can be sampled; everything else is set to -inf.
-  2. Bio-score gating    — after each token, the partial sequence is scored
-     with ProteinSequenceScorer.  If the score falls below ``bio_threshold``
-     the processor forces an immediate ">" (sequence end), pruning the
-     trajectory early rather than letting it continue into bad chemistry.
-  3. Length enforcement  — once the generated portion exceeds ``max_seq_len``
-     tokens the processor forces ">".
-
-The one EPGF aspect that does NOT map to a LogitsProcessor is the
-"generate N candidates, score all, pick best" selection step.  That is
-replaced by GRPO's ``num_generations``: TRL generates multiple completions
-per prompt and the policy gradient selects better sequences via the reward
-signal rather than at generation time.
+The one required care: TRL wraps the model in DDP/FSDP before training
+starts, so inside ``rollout_func`` we call
+``trainer.accelerator.unwrap_model(trainer.model)`` to get the raw
+model before calling ``generate()`` and ``compute_transition_scores()``,
+both of which are not defined on the DDP wrapper.
 
 Two reward modes:
   1. Composition-only (default): ProteinSequenceScorer — no external tools.
   2. Structural (opt-in): ColabFold → Foldseek top-hit probability.
      Enable by setting COLABFOLD_PATH, FOLDSEEK_PATH, FOLDSEEK_DB env vars.
-     In DDP each rank scores its own shard independently; only recommended
-     for single-GPU or when dedicated folding resources are available.
+     In DDP each rank folds/scores its own shard independently.
 
 Usage
 -----
@@ -54,16 +48,11 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import torch
 from datasets import Dataset
 from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    LogitsProcessor,
-    LogitsProcessorList,
-    TrainerCallback,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
 from ProteinModel import ProteinSequenceScorer
@@ -108,7 +97,7 @@ SUPERFAMILIES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Model constants
+# Model / EPGF constants
 # ---------------------------------------------------------------------------
 
 MODEL_PATH = "GreatCaptainNemo/ProLLaMA"
@@ -116,196 +105,216 @@ LORA_DIR   = "prolora"
 
 PROMPT_TEMPLATE = "[Generate by superfamily] Superfamily=<{superfamily}> Seq=<"
 
-# EPGF constraint knobs
-MAX_SEQ_LEN    = 500   # force ">" after this many generated tokens
-BIO_THRESHOLD  = 0.55  # force ">" when partial sequence scores below this
+NUM_CANDIDATES  = 8     # N candidates sampled per EPGF step
+MAX_SEQ_LEN     = 500   # abandon trajectory after this many generated tokens
+BIO_THRESHOLD   = 0.55  # minimum ProteinSequenceScorer score to keep a candidate
+
+# EPGF temperature schedule (anneals over the course of one sequence)
+INITIAL_TEMPERATURE = 1.0
+FINAL_TEMPERATURE   = 0.001
+DECAY_RATE          = 0.1
 
 # ---------------------------------------------------------------------------
-# EPGF LogitsProcessor
+# EPGF generation
 # ---------------------------------------------------------------------------
 
-class EPGFLogitsProcessor(LogitsProcessor):
-    """Per-token EPGF constraints as a HuggingFace LogitsProcessor.
+def _softmax(x: list[float], temperature: float = 1.0) -> np.ndarray:
+    arr = np.array(x) / temperature
+    e = np.exp(arr - np.max(arr))
+    return e / e.sum()
 
-    DDP-safe: called independently on each rank for its local batch shard.
-    No inter-process communication is needed.
 
-    Parameters
-    ----------
-    tokenizer :
-        The model tokenizer, used to decode partial sequences and to look up
-        the token IDs for amino acids and ">".
-    prompt_length : int
-        Number of tokens in the prompt (input_ids up to this index are the
-        prompt; everything after is the generated sequence so far).
-    max_seq_len : int
-        Force sequence termination after this many generated tokens.
-    bio_threshold : float
-        Force sequence termination if ``ProteinSequenceScorer`` scores the
-        current partial sequence below this value.
+def epgf_generate_sequence(
+    prompt: str,
+    model,
+    tokenizer,
+    num_candidates: int = NUM_CANDIDATES,
+    max_seq_len: int = MAX_SEQ_LEN,
+    bio_threshold: float = BIO_THRESHOLD,
+) -> Optional[dict]:
+    """Generate one protein sequence from ``prompt`` using EPGF.
+
+    At each token step:
+      1. Sample ``num_candidates`` one-token extensions.
+      2. Filter by sequence length and ``ProteinSequenceScorer`` bio score.
+      3. Select the winning token via softmax-weighted sampling over bio scores
+         (temperature decays across steps).
+
+    Returns a dict with keys ``prompt_id``, ``tokens``, ``logp`` suitable
+    for the ``rollout_func`` output format, or ``None`` if all candidates
+    were filtered out on the first step.
+
+    ``logp`` is a list of per-token log probabilities.  Because
+    ``max_new_tokens=1`` per call, each entry is the log prob of the single
+    chosen token — exactly the per-token format TRL expects for GRPO.
     """
+    original_prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids[0].tolist()
 
-    AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
-
-    def __init__(
-        self,
-        tokenizer,
-        prompt_length: int,
-        max_seq_len: int = MAX_SEQ_LEN,
-        bio_threshold: float = BIO_THRESHOLD,
-    ):
-        self.tokenizer     = tokenizer
-        self.prompt_length = prompt_length
-        self.max_seq_len   = max_seq_len
-        self.bio_threshold = bio_threshold
-
-        vocab_size = tokenizer.vocab_size
-
-        # Precompute set of token IDs that are allowed during generation.
-        # For Llama-2 tokeniser each single letter is its own token, but we
-        # check encode() to be safe (some tokenisers prepend a space token).
-        allowed: set[int] = set()
-        for aa in self.AMINO_ACIDS:
-            for tid in tokenizer.encode(aa, add_special_tokens=False):
-                if tid < vocab_size:
-                    allowed.add(tid)
-        # The closing ">" signals end-of-sequence.
-        for tid in tokenizer.encode(">", add_special_tokens=False):
-            if tid < vocab_size:
-                allowed.add(tid)
-
-        self._allowed_ids = list(allowed)
-
-        # Precompute the "only allow '>'" mask — reused when forcing termination.
-        end_ids: set[int] = set()
-        for tid in tokenizer.encode(">", add_special_tokens=False):
-            if tid < vocab_size:
-                end_ids.add(tid)
-        self._end_ids = list(end_ids)
-
-        # Build the base allowed mask once (shape: [vocab_size])
-        self._allowed_mask = torch.full((vocab_size,), float("-inf"))
-        for tid in self._allowed_ids:
-            self._allowed_mask[tid] = 0.0
-
-        self._end_mask = torch.full((vocab_size,), float("-inf"))
-        for tid in self._end_ids:
-            self._end_mask[tid] = 0.0
-
-    def _partial_sequence(self, input_ids_row: torch.Tensor) -> str:
-        """Decode the generated tokens (after the prompt) as a sequence string."""
-        generated = input_ids_row[self.prompt_length:]
-        text = self.tokenizer.decode(generated, skip_special_tokens=True)
-        # Strip any ">" that may have been generated already
-        return re.sub(r"[^ACDEFGHIKLMNPQRSTVWY]", "", text.upper())
-
-    def _should_terminate(self, partial_seq: str, gen_len: int) -> bool:
-        """Return True if the current trajectory should be forced to end."""
-        if gen_len >= self.max_seq_len:
-            return True
-        if not partial_seq:
-            return False
-        try:
-            score = ProteinSequenceScorer(partial_seq).get_comprehensive_score()
-            return score < self.bio_threshold
-        except Exception:
-            return False
-
-    def __call__(
-        self,
-        input_ids: torch.LongTensor,
-        scores: torch.FloatTensor,
-    ) -> torch.FloatTensor:
-        batch_size, vocab_size = scores.shape
-        out = scores.clone()
-
-        for i in range(batch_size):
-            gen_len = input_ids.shape[1] - self.prompt_length
-            partial  = self._partial_sequence(input_ids[i])
-
-            if self._should_terminate(partial, gen_len):
-                # Force ">" — end the sequence now
-                out[i] = self._end_mask.to(scores.device)
-            else:
-                # Allow only valid amino-acid tokens and ">"
-                out[i] = out[i] + self._allowed_mask.to(scores.device)
-
-        return out
-
-
-# ---------------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------------
-
-def load_model_or_checkpoint(
-    base_model_id: str,
-    lora_id: str,
-    dtype=torch.bfloat16,
-    device_map: Optional[str] = None,
-):
-    """Load ProLLaMA + LoRA adapter, resuming from a checkpoint if one exists.
-
-    ``device_map=None`` so accelerate controls device placement for DDP.
-    """
-    tokenizer = AutoTokenizer.from_pretrained(
-        "meta-llama/Llama-2-7b-hf", padding_side="left", use_fast=True
-    )
-    tokenizer.pad_token = tokenizer.eos_token
-
-    base = AutoModelForCausalLM.from_pretrained(
-        base_model_id, torch_dtype=dtype, device_map=device_map
+    gen_cfg = GenerationConfig(
+        max_new_tokens=1,
+        do_sample=True,
+        top_k=40,
+        top_p=0.9,
+        temperature=1.0,
+        num_return_sequences=num_candidates,
+        repetition_penalty=1.0,
+        pad_token_id=tokenizer.eos_token_id,
     )
 
-    has_checkpoint = (
-        lora_id
-        and os.path.isdir(lora_id)
-        and any(Path(lora_id).iterdir())
-    )
+    temperature = INITIAL_TEMPERATURE
+    accumulated_tokens: list[int]  = []
+    accumulated_logp:   list[float] = []
 
-    if has_checkpoint:
-        logger.info(f"Resuming from LoRA checkpoint: {lora_id}")
-        model = PeftModel.from_pretrained(base, lora_id, is_trainable=True)
-    else:
-        logger.info(f"No checkpoint — initialising fresh LoRA on {base_model_id}")
-        lora_cfg = LoraConfig(
-            r=128,
-            lora_alpha=256,
-            lora_dropout=0.05,
-            inference_mode=False,
-            bias="none",
-            task_type="CAUSAL_LM",
+    current_prompt = prompt
+    while True:
+        inputs = tokenizer(current_prompt, return_tensors="pt").to(model.device)
+        outputs = model.generate(
+            **inputs,
+            generation_config=gen_cfg,
+            output_scores=True,
+            return_dict_in_generate=True,
         )
-        model = get_peft_model(base, lora_cfg)
 
-    return model, tokenizer
+        candidates     = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
+        # transition_scores shape: [num_candidates, 1] (one new token per call)
+        transition_scores = model.compute_transition_scores(
+            outputs.sequences, outputs.scores, normalize_logits=True
+        )
+        log_probs = transition_scores.sum(dim=1).cpu().numpy().tolist()
+
+        # Sort by log prob descending; keep top half + any that look complete
+        ranked = sorted(
+            zip(candidates, outputs.sequences, log_probs),
+            key=lambda x: x[2],
+            reverse=True,
+        )
+        top_half   = ranked[: max(1, len(ranked) // 2)]
+        top_half_set = set(id(item) for item in top_half)
+        complete   = [item for item in ranked
+                      if item[0].strip().endswith(">") and id(item) not in top_half_set]
+        pool = top_half + complete
+
+        # Filter by length and bio score
+        bio_scores:       list[float] = []
+        filtered_cands:   list[str]   = []
+        filtered_tokens:  list        = []
+        filtered_logp:    list[float] = []
+
+        for cand, token_ids, lm_score in pool:
+            if len(token_ids) > max_seq_len:
+                continue
+            seq = cand.split("Seq=<")[-1].split(">")[0].strip()
+            try:
+                bio_score = ProteinSequenceScorer(seq).get_comprehensive_score()
+            except Exception:
+                continue
+            if bio_score < bio_threshold:
+                continue
+            bio_scores.append(bio_score)
+            filtered_cands.append(cand)
+            filtered_tokens.append(token_ids)
+            filtered_logp.append(lm_score)
+
+        if not filtered_cands:
+            return None
+
+        weights    = _softmax(bio_scores, temperature=temperature)
+        temperature = max(FINAL_TEMPERATURE, temperature * DECAY_RATE)
+
+        idx          = np.random.choice(len(filtered_cands), p=weights)
+        winner       = filtered_cands[idx]
+        winner_token = filtered_tokens[idx][-1].item()
+        winner_logp  = filtered_logp[idx]
+
+        accumulated_tokens.append(winner_token)
+        accumulated_logp.append(winner_logp)
+
+        if winner.endswith(">"):
+            return {
+                "prompt_id": original_prompt_ids,
+                "tokens":    accumulated_tokens,
+                "logp":      accumulated_logp,
+            }
+        else:
+            current_prompt = winner
 
 
 # ---------------------------------------------------------------------------
-# Inject EPGFLogitsProcessor into model.generate()
+# rollout_func — runs EPGF on each rank's local model
 # ---------------------------------------------------------------------------
 
-def patch_model_generate(model, tokenizer, prompt_length: int):
-    """Monkey-patch model.generate() to always apply EPGFLogitsProcessor.
+def build_rollout_func(
+    num_generations: int,
+    max_seq_len:     int   = MAX_SEQ_LEN,
+    bio_threshold:   float = BIO_THRESHOLD,
+):
+    """Return a rollout_func for GRPOTrainer that generates via EPGF.
 
-    This is transparent to GRPOTrainer — it calls model.generate() as usual
-    and the constraint is applied automatically.  Works in DDP because each
-    rank patches its own local model instance.
+    DDP notes
+    ---------
+    * Called independently on each accelerate rank for that rank's local
+      batch shard — no cross-rank coordination is needed.
+    * ``trainer.accelerator.unwrap_model(trainer.model)`` retrieves the raw
+      model before any DDP/FSDP wrapper.  Both ``model.generate()`` and
+      ``model.compute_transition_scores()`` must be called on the unwrapped
+      model; neither is defined on the DDP wrapper class.
+    * The model is switched to eval / no_grad for generation and restored
+      to training mode afterwards so the subsequent backward pass is not
+      affected.
     """
-    processor = EPGFLogitsProcessor(tokenizer, prompt_length=prompt_length)
-    original_generate = model.generate
 
-    def constrained_generate(*args, **kwargs):
-        lp = kwargs.pop("logits_processor", None)
-        if lp is None:
-            lp = LogitsProcessorList()
-        elif not isinstance(lp, LogitsProcessorList):
-            lp = LogitsProcessorList(list(lp))
-        lp.append(processor)
-        kwargs["logits_processor"] = lp
-        return original_generate(*args, **kwargs)
+    def rollout_func(prompts: list[str], trainer: GRPOTrainer, **kwargs):
+        model     = trainer.accelerator.unwrap_model(trainer.model)
+        tokenizer = trainer.processing_class
+        eos_id    = tokenizer.eos_token_id
 
-    model.generate = constrained_generate
-    return model
+        prompt_ids_out:     list = []
+        completion_ids_out: list = []
+        logprobs_out:       list = []
+
+        was_training = model.training
+        model.eval()
+
+        with torch.no_grad():
+            for prompt in prompts:
+                generated = 0
+                attempts  = 0
+                max_attempts = num_generations * 5
+
+                while generated < num_generations and attempts < max_attempts:
+                    result = epgf_generate_sequence(
+                        prompt, model, tokenizer,
+                        max_seq_len=max_seq_len,
+                        bio_threshold=bio_threshold,
+                    )
+                    attempts += 1
+                    if result is None:
+                        continue
+
+                    prompt_ids_out.append(result["prompt_id"])
+                    completion_ids_out.append(result["tokens"] + [eos_id])
+                    logprobs_out.append(result["logp"] + [0.0])
+                    generated += 1
+
+                # Pad with empty completions if EPGF never found a valid sequence
+                while generated < num_generations:
+                    prompt_ids_out.append(
+                        tokenizer(prompt, add_special_tokens=True).input_ids
+                    )
+                    completion_ids_out.append([eos_id])
+                    logprobs_out.append([0.0])
+                    generated += 1
+
+        if was_training:
+            model.train()
+
+        return {
+            "prompt_ids":     prompt_ids_out,
+            "completion_ids": completion_ids_out,
+            "logprobs":       logprobs_out,
+        }
+
+    return rollout_func
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +332,11 @@ def _extract_sequence(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def sequence_composition_reward(prompts, completions, **kwargs) -> list[float]:
+    """Score completions with ProteinSequenceScorer.
+
+    Called independently on each rank's local batch shard — no inter-process
+    communication required.
+    """
     rewards = []
     for completion in completions:
         text = completion[0]["content"] if isinstance(completion, list) else completion
@@ -414,6 +428,55 @@ def build_structural_reward_func(superfamily: str):
 
 
 # ---------------------------------------------------------------------------
+# Model loading
+# ---------------------------------------------------------------------------
+
+def load_model_or_checkpoint(
+    base_model_id: str,
+    lora_id: str,
+    dtype=torch.bfloat16,
+    device_map: Optional[str] = None,
+):
+    """Load ProLLaMA + LoRA adapter, resuming from a checkpoint if one exists.
+
+    ``device_map=None`` lets accelerate control device placement for DDP.
+    Pass ``device_map="auto"`` only for single-process inference.
+    """
+    # ProLLaMA uses the Llama-2 tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        "meta-llama/Llama-2-7b-hf", padding_side="left", use_fast=True
+    )
+    tokenizer.pad_token = tokenizer.eos_token
+
+    base = AutoModelForCausalLM.from_pretrained(
+        base_model_id, torch_dtype=dtype, device_map=device_map
+    )
+
+    has_checkpoint = (
+        lora_id
+        and os.path.isdir(lora_id)
+        and any(Path(lora_id).iterdir())
+    )
+
+    if has_checkpoint:
+        logger.info(f"Resuming from LoRA checkpoint: {lora_id}")
+        model = PeftModel.from_pretrained(base, lora_id, is_trainable=True)
+    else:
+        logger.info(f"No checkpoint — initialising fresh LoRA on {base_model_id}")
+        lora_cfg = LoraConfig(
+            r=128,
+            lora_alpha=256,
+            lora_dropout=0.05,
+            inference_mode=False,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(base, lora_cfg)
+
+    return model, tokenizer
+
+
+# ---------------------------------------------------------------------------
 # Callback
 # ---------------------------------------------------------------------------
 
@@ -445,20 +508,6 @@ def main(
 ):
     model, tokenizer = load_model_or_checkpoint(model_path, lora_dir, device_map=None)
 
-    # Compute the prompt token length so EPGFLogitsProcessor knows where
-    # the generated portion starts.  All prompts share the same template
-    # structure; we measure on the longest one.
-    sample_prompt = max(
-        (PROMPT_TEMPLATE.format(superfamily=sf) for sf in SUPERFAMILIES),
-        key=len,
-    )
-    prompt_length = len(tokenizer(sample_prompt, add_special_tokens=True).input_ids)
-
-    # Patch model.generate() to apply EPGF constraints on every call.
-    # GRPOTrainer calls model.generate() internally and will pick this up
-    # automatically, on every rank, without any changes to the trainer.
-    patch_model_generate(model, tokenizer, prompt_length=prompt_length)
-
     formatted_data = [
         {"prompt": PROMPT_TEMPLATE.format(superfamily=sf)}
         for sf in SUPERFAMILIES.keys()
@@ -471,6 +520,8 @@ def main(
     else:
         logger.info("Using composition reward (ProteinSequenceScorer)")
         reward_funcs = [sequence_composition_reward]
+
+    rollout_func = build_rollout_func(num_generations=num_generations)
 
     training_args = GRPOConfig(
         learning_rate=5e-6,
@@ -496,6 +547,7 @@ def main(
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
+        rollout_func=rollout_func,
         reward_funcs=reward_funcs,
         callbacks=[ArchiveCallback(STORAGE_DIR)],
         args=training_args,
