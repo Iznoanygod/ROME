@@ -3,33 +3,42 @@
 Uses stock TRL GRPOTrainer with no custom rollout_func, so it works correctly
 under ``accelerate launch`` for multi-GPU and multi-node training.
 
-The model (ProLLaMA) generates protein sequences autoregressively given a
-superfamily prompt.  Two reward modes are supported:
+EPGF-style constrained generation is implemented as a HuggingFace
+``LogitsProcessor``, which is called at every token step and is fully
+DDP-compatible (each rank applies it independently to its local shard).
 
-  1. Composition-only (default, no external tools):
-       ProteinSequenceScorer from ProteinModel.py scores generated sequences
-       on amino-acid diversity, physicochemical properties, and complexity.
+The constraints applied per-token are:
+  1. Vocabulary masking  — only valid amino-acid tokens and the closing ">"
+     can be sampled; everything else is set to -inf.
+  2. Bio-score gating    — after each token, the partial sequence is scored
+     with ProteinSequenceScorer.  If the score falls below ``bio_threshold``
+     the processor forces an immediate ">" (sequence end), pruning the
+     trajectory early rather than letting it continue into bad chemistry.
+  3. Length enforcement  — once the generated portion exceeds ``max_seq_len``
+     tokens the processor forces ">".
 
-  2. Structural (opt-in, requires ColabFold + Foldseek):
-       Each completion is folded with ColabFold then searched against the
-       per-superfamily Foldseek database.  The top-hit probability is the
-       reward.  Enable by setting COLABFOLD_PATH, FOLDSEEK_PATH, FOLDSEEK_DB
-       env vars (or editing the constants below).
+The one EPGF aspect that does NOT map to a LogitsProcessor is the
+"generate N candidates, score all, pick best" selection step.  That is
+replaced by GRPO's ``num_generations``: TRL generates multiple completions
+per prompt and the policy gradient selects better sequences via the reward
+signal rather than at generation time.
 
-       NOTE: in DDP each rank calls the reward function independently on its
-       local batch shard.  ColabFold is CPU/GPU-heavy, so only enable
-       structural reward when you have dedicated folding resources or are
-       running single-GPU.
+Two reward modes:
+  1. Composition-only (default): ProteinSequenceScorer — no external tools.
+  2. Structural (opt-in): ColabFold → Foldseek top-hit probability.
+     Enable by setting COLABFOLD_PATH, FOLDSEEK_PATH, FOLDSEEK_DB env vars.
+     In DDP each rank scores its own shard independently; only recommended
+     for single-GPU or when dedicated folding resources are available.
 
 Usage
 -----
     # single GPU
     python protein_generation/baseline.py
 
-    # multi-GPU on one node
+    # multi-GPU, one node
     accelerate launch --multi_gpu protein_generation/baseline.py
 
-    # multi-node (2 nodes, 8 GPUs each)
+    # multi-node (2 nodes × 8 GPUs)
     accelerate launch --num_machines 2 --num_processes 16 \\
         protein_generation/baseline.py
 """
@@ -48,7 +57,13 @@ from typing import Optional
 import torch
 from datasets import Dataset
 from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    LogitsProcessor,
+    LogitsProcessorList,
+    TrainerCallback,
+)
 from trl import GRPOConfig, GRPOTrainer
 
 from ProteinModel import ProteinSequenceScorer
@@ -64,7 +79,7 @@ logging.basicConfig(
 logger = logging.getLogger("protein_baseline")
 
 # ---------------------------------------------------------------------------
-# Paths — set via env vars or edit here
+# Paths
 # ---------------------------------------------------------------------------
 
 HF_TOKEN       = os.environ.get("HF_TOKEN", "")
@@ -99,8 +114,124 @@ SUPERFAMILIES: dict[str, str] = {
 MODEL_PATH = "GreatCaptainNemo/ProLLaMA"
 LORA_DIR   = "prolora"
 
-# ProLLaMA prompt format — the model continues after "Seq=<"
 PROMPT_TEMPLATE = "[Generate by superfamily] Superfamily=<{superfamily}> Seq=<"
+
+# EPGF constraint knobs
+MAX_SEQ_LEN    = 500   # force ">" after this many generated tokens
+BIO_THRESHOLD  = 0.55  # force ">" when partial sequence scores below this
+
+# ---------------------------------------------------------------------------
+# EPGF LogitsProcessor
+# ---------------------------------------------------------------------------
+
+class EPGFLogitsProcessor(LogitsProcessor):
+    """Per-token EPGF constraints as a HuggingFace LogitsProcessor.
+
+    DDP-safe: called independently on each rank for its local batch shard.
+    No inter-process communication is needed.
+
+    Parameters
+    ----------
+    tokenizer :
+        The model tokenizer, used to decode partial sequences and to look up
+        the token IDs for amino acids and ">".
+    prompt_length : int
+        Number of tokens in the prompt (input_ids up to this index are the
+        prompt; everything after is the generated sequence so far).
+    max_seq_len : int
+        Force sequence termination after this many generated tokens.
+    bio_threshold : float
+        Force sequence termination if ``ProteinSequenceScorer`` scores the
+        current partial sequence below this value.
+    """
+
+    AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
+
+    def __init__(
+        self,
+        tokenizer,
+        prompt_length: int,
+        max_seq_len: int = MAX_SEQ_LEN,
+        bio_threshold: float = BIO_THRESHOLD,
+    ):
+        self.tokenizer     = tokenizer
+        self.prompt_length = prompt_length
+        self.max_seq_len   = max_seq_len
+        self.bio_threshold = bio_threshold
+
+        vocab_size = tokenizer.vocab_size
+
+        # Precompute set of token IDs that are allowed during generation.
+        # For Llama-2 tokeniser each single letter is its own token, but we
+        # check encode() to be safe (some tokenisers prepend a space token).
+        allowed: set[int] = set()
+        for aa in self.AMINO_ACIDS:
+            for tid in tokenizer.encode(aa, add_special_tokens=False):
+                if tid < vocab_size:
+                    allowed.add(tid)
+        # The closing ">" signals end-of-sequence.
+        for tid in tokenizer.encode(">", add_special_tokens=False):
+            if tid < vocab_size:
+                allowed.add(tid)
+
+        self._allowed_ids = list(allowed)
+
+        # Precompute the "only allow '>'" mask — reused when forcing termination.
+        end_ids: set[int] = set()
+        for tid in tokenizer.encode(">", add_special_tokens=False):
+            if tid < vocab_size:
+                end_ids.add(tid)
+        self._end_ids = list(end_ids)
+
+        # Build the base allowed mask once (shape: [vocab_size])
+        self._allowed_mask = torch.full((vocab_size,), float("-inf"))
+        for tid in self._allowed_ids:
+            self._allowed_mask[tid] = 0.0
+
+        self._end_mask = torch.full((vocab_size,), float("-inf"))
+        for tid in self._end_ids:
+            self._end_mask[tid] = 0.0
+
+    def _partial_sequence(self, input_ids_row: torch.Tensor) -> str:
+        """Decode the generated tokens (after the prompt) as a sequence string."""
+        generated = input_ids_row[self.prompt_length:]
+        text = self.tokenizer.decode(generated, skip_special_tokens=True)
+        # Strip any ">" that may have been generated already
+        return re.sub(r"[^ACDEFGHIKLMNPQRSTVWY]", "", text.upper())
+
+    def _should_terminate(self, partial_seq: str, gen_len: int) -> bool:
+        """Return True if the current trajectory should be forced to end."""
+        if gen_len >= self.max_seq_len:
+            return True
+        if not partial_seq:
+            return False
+        try:
+            score = ProteinSequenceScorer(partial_seq).get_comprehensive_score()
+            return score < self.bio_threshold
+        except Exception:
+            return False
+
+    def __call__(
+        self,
+        input_ids: torch.LongTensor,
+        scores: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        batch_size, vocab_size = scores.shape
+        out = scores.clone()
+
+        for i in range(batch_size):
+            gen_len = input_ids.shape[1] - self.prompt_length
+            partial  = self._partial_sequence(input_ids[i])
+
+            if self._should_terminate(partial, gen_len):
+                # Force ">" — end the sequence now
+                out[i] = self._end_mask.to(scores.device)
+            else:
+                # Allow only valid amino-acid tokens and ">"
+                out[i] = out[i] + self._allowed_mask.to(scores.device)
+
+        return out
+
 
 # ---------------------------------------------------------------------------
 # Model loading
@@ -112,13 +243,10 @@ def load_model_or_checkpoint(
     dtype=torch.bfloat16,
     device_map: Optional[str] = None,
 ):
-    """Load ProLLaMA + LoRA, resuming from a saved adapter if one exists.
+    """Load ProLLaMA + LoRA adapter, resuming from a checkpoint if one exists.
 
-    ``device_map`` is intentionally left as None so that accelerate can place
-    the model on the correct device for DDP.  Pass ``device_map="auto"`` only
-    for single-process inference.
+    ``device_map=None`` so accelerate controls device placement for DDP.
     """
-    # ProLLaMA uses the Llama-2 tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         "meta-llama/Llama-2-7b-hf", padding_side="left", use_fast=True
     )
@@ -138,7 +266,7 @@ def load_model_or_checkpoint(
         logger.info(f"Resuming from LoRA checkpoint: {lora_id}")
         model = PeftModel.from_pretrained(base, lora_id, is_trainable=True)
     else:
-        logger.info(f"No checkpoint found — initialising fresh LoRA on {base_model_id}")
+        logger.info(f"No checkpoint — initialising fresh LoRA on {base_model_id}")
         lora_cfg = LoraConfig(
             r=128,
             lora_alpha=256,
@@ -153,33 +281,52 @@ def load_model_or_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# Inject EPGFLogitsProcessor into model.generate()
+# ---------------------------------------------------------------------------
+
+def patch_model_generate(model, tokenizer, prompt_length: int):
+    """Monkey-patch model.generate() to always apply EPGFLogitsProcessor.
+
+    This is transparent to GRPOTrainer — it calls model.generate() as usual
+    and the constraint is applied automatically.  Works in DDP because each
+    rank patches its own local model instance.
+    """
+    processor = EPGFLogitsProcessor(tokenizer, prompt_length=prompt_length)
+    original_generate = model.generate
+
+    def constrained_generate(*args, **kwargs):
+        lp = kwargs.pop("logits_processor", None)
+        if lp is None:
+            lp = LogitsProcessorList()
+        elif not isinstance(lp, LogitsProcessorList):
+            lp = LogitsProcessorList(list(lp))
+        lp.append(processor)
+        kwargs["logits_processor"] = lp
+        return original_generate(*args, **kwargs)
+
+    model.generate = constrained_generate
+    return model
+
+
+# ---------------------------------------------------------------------------
 # Sequence extraction helper
 # ---------------------------------------------------------------------------
 
 def _extract_sequence(text: str) -> str:
-    """Pull the amino-acid sequence out of a ProLLaMA completion."""
-    # The model generates everything after "Seq=<" up to the closing ">"
     if "Seq=<" in text:
         return text.split("Seq=<")[-1].split(">")[0].strip()
-    # fallback: treat the whole text as the sequence
     return re.sub(r"[^ACDEFGHIKLMNPQRSTVWY]", "", text.upper())
 
 
 # ---------------------------------------------------------------------------
-# Reward: composition-based (multi-GPU safe, no external tools)
+# Reward: composition-based (DDP-safe, no external tools)
 # ---------------------------------------------------------------------------
 
 def sequence_composition_reward(prompts, completions, **kwargs) -> list[float]:
-    """Score each completion with ProteinSequenceScorer.
-
-    Called independently on each accelerate rank's local batch shard —
-    no inter-process communication required.
-    """
     rewards = []
     for completion in completions:
-        # TRL passes completions as raw strings for non-chat models
         text = completion[0]["content"] if isinstance(completion, list) else completion
-        seq = _extract_sequence(text)
+        seq  = _extract_sequence(text)
         try:
             score = ProteinSequenceScorer(seq).get_comprehensive_score() if seq else 0.0
         except Exception:
@@ -189,7 +336,7 @@ def sequence_composition_reward(prompts, completions, **kwargs) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
-# Reward: structural via ColabFold + Foldseek (optional, single-GPU recommended)
+# Reward: structural via ColabFold + Foldseek (optional)
 # ---------------------------------------------------------------------------
 
 def _write_fasta(sequences: list[str], path: str) -> None:
@@ -242,14 +389,11 @@ def _run_foldseek(pdb_dir: str, db: str, work_dir: str) -> dict[str, float]:
 
 
 def build_structural_reward_func(superfamily: str):
-    """Return a per-superfamily structural reward function."""
     db = os.path.join(FOLDSEEK_DB, SUPERFAMILIES.get(superfamily, ""))
 
     def sequence_structural_reward(prompts, completions, **kwargs) -> list[float]:
         seqs = [
-            _extract_sequence(
-                c[0]["content"] if isinstance(c, list) else c
-            )
+            _extract_sequence(c[0]["content"] if isinstance(c, list) else c)
             for c in completions
         ]
         if not any(seqs):
@@ -270,7 +414,7 @@ def build_structural_reward_func(superfamily: str):
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint archival callback
+# Callback
 # ---------------------------------------------------------------------------
 
 class ArchiveCallback(TrainerCallback):
@@ -289,22 +433,32 @@ class ArchiveCallback(TrainerCallback):
 # ---------------------------------------------------------------------------
 
 def main(
-    model_path: str      = MODEL_PATH,
-    lora_dir: str        = LORA_DIR,
-    max_steps: int       = 100,
-    save_steps: int      = 25,
-    num_generations: int = 4,
+    model_path: str       = MODEL_PATH,
+    lora_dir: str         = LORA_DIR,
+    max_steps: int        = 100,
+    save_steps: int       = 25,
+    num_generations: int  = 4,
     per_device_batch: int = 2,
-    grad_accum: int      = 4,
+    grad_accum: int       = 4,
     max_completion_length: int = 512,
-    max_prompt_length: int = 128,
+    max_prompt_length: int     = 128,
 ):
-    # device_map=None so accelerate controls device placement in DDP
     model, tokenizer = load_model_or_checkpoint(model_path, lora_dir, device_map=None)
 
-    # One row per superfamily; the prompt string is what the model conditions on.
-    # GRPOTrainer tokenises this directly (no chat template — ProLLaMA is not
-    # an instruction model).
+    # Compute the prompt token length so EPGFLogitsProcessor knows where
+    # the generated portion starts.  All prompts share the same template
+    # structure; we measure on the longest one.
+    sample_prompt = max(
+        (PROMPT_TEMPLATE.format(superfamily=sf) for sf in SUPERFAMILIES),
+        key=len,
+    )
+    prompt_length = len(tokenizer(sample_prompt, add_special_tokens=True).input_ids)
+
+    # Patch model.generate() to apply EPGF constraints on every call.
+    # GRPOTrainer calls model.generate() internally and will pick this up
+    # automatically, on every rank, without any changes to the trainer.
+    patch_model_generate(model, tokenizer, prompt_length=prompt_length)
+
     formatted_data = [
         {"prompt": PROMPT_TEMPLATE.format(superfamily=sf)}
         for sf in SUPERFAMILIES.keys()
@@ -319,26 +473,21 @@ def main(
         reward_funcs = [sequence_composition_reward]
 
     training_args = GRPOConfig(
-        # optimisation
         learning_rate=5e-6,
         weight_decay=0.1,
         warmup_ratio=0.1,
         lr_scheduler_type="cosine",
         optim="adamw_8bit",
         max_grad_norm=1.0,
-        # batching
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum,
         num_generations=num_generations,
         generation_batch_size=per_device_batch,
-        # sequence lengths
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
-        # schedule
         max_steps=max_steps,
         save_steps=save_steps,
         logging_steps=1,
-        # output
         output_dir=lora_dir,
         run_name="protein-baseline",
         report_to="none",
