@@ -1,7 +1,11 @@
 import os
 import logging
-import pathlib import Path
+from pathlib import Path
+from typing import Any, Callable, List, Optional
 
+from trl import SFTConfig
+
+from rome.config import ModelConfig
 from rome.trainer import Trainer
 
 class SFT(Trainer):
@@ -15,7 +19,7 @@ class SFT(Trainer):
         sft_config: Optional[SFTConfig] = None,
         top_p: float = 0.5,
     ):
-        super().__init__(gpus=gpus, dataset=dataset, reward_funcs=reward_funcs)
+        super().__init__(gpus=gpus, reward_funcs=reward_funcs)
         self._trainer_callbacks = trainer_callbacks
         self._sft_config = sft_config
         if self._sft_config is None:

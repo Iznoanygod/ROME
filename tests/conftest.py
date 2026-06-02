@@ -7,6 +7,7 @@ run on a minimal environment. Tests that need the real packages should call
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 import pytest
@@ -48,6 +49,7 @@ def _stub_if_missing() -> None:
         import torch
     except ImportError:
         m = _ensure_module("torch")
+        m.__spec__ = importlib.util.spec_from_loader("torch", loader=None)
 
         class _NoGrad:
             def __enter__(self):

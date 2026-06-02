@@ -90,6 +90,7 @@ class SequentialFlow(Workflow):
         self._generator_tasks = []
         self._scorer_tasks = []
 
+    @staticmethod
     def _default_generator_func(prompts: list[str], model, tokenizer, generation_config):
         inputs = tokenizer.apply_chat_template(
             prompts, 
@@ -294,7 +295,7 @@ class SequentialFlow(Workflow):
                     _output_key=f"reward_{reward_func.__name__}_{i}_output",
                 ))
 
-        # start generator scheduler and gatherer 
+        # start generator scheduler and gatherer
         schedule_gather_fut = asyncio.gather(
             self._generation_schedule(workflow_ddict, terminate_event),
             self._generation_gather(workflow_ddict, terminate_event),
@@ -303,6 +304,7 @@ class SequentialFlow(Workflow):
         )
 
         async for state in rl.start():
+            await schedule_gather_fut
             print(f"Iteration {state.iteration}: metric={state.metric_value}")
 
         return
