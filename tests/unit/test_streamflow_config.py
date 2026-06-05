@@ -12,6 +12,8 @@ def test_defaults():
     assert cfg.num_generations_per_prompt == 4
     assert cfg.prompts == []
     assert cfg.max_buffer_per_prompt == 32
+    assert cfg.checkpoint_dir is None
+    assert cfg.checkpoint_interval == 1
 
 
 def test_overrides():
@@ -25,6 +27,8 @@ def test_overrides():
         num_generations_per_prompt=8,
         prompts=["a", "b"],
         max_buffer_per_prompt=64,
+        checkpoint_dir="/tmp/ckpt",
+        checkpoint_interval=5,
     )
     assert cfg.iterations == 100
     assert cfg.reward_threshold == 0.9
@@ -35,6 +39,8 @@ def test_overrides():
     assert cfg.num_generations_per_prompt == 8
     assert cfg.prompts == ["a", "b"]
     assert cfg.max_buffer_per_prompt == 64
+    assert cfg.checkpoint_dir == "/tmp/ckpt"
+    assert cfg.checkpoint_interval == 5
 
 
 def test_prompts_are_copied():

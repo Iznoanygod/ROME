@@ -45,8 +45,21 @@ def load_model(model_config: ModelConfig):
             model = get_peft_model(model, lora_config)
     return model, tokenizer
 
-def reload_lora(model, model_config: ModelConfig):
-    pass
+def reload_lora(model, model_config: ModelConfig, checkpoint_path: str):
+    """Hot-reload a LoRA adapter checkpoint into an already-loaded PEFT model.
+
+    Used by streaming workflows to swap in a freshly trained adapter
+    between inference batches without tearing down the base model.
+    """
+    if checkpoint_path is None or not os.path.exists(checkpoint_path):
+        return model
+    if hasattr(model, "load_adapter"):
+        try:
+            model.delete_adapter("default")
+        except (KeyError, ValueError, AttributeError):
+            pass
+        model.load_adapter(checkpoint_path, adapter_name="default")
+    return model
 
 
 def save_model(model, model_config: ModelConfig):

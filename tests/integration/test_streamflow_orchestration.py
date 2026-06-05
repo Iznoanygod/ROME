@@ -216,6 +216,105 @@ def test_scorer_gather_merges_per_scorer_outputs():
     }
 
 
+def test_weight_sync_callback_bumps_version_and_writes_path(tmp_path):
+    from rome.flows.streamflow import _WeightSyncCallback
+
+    ddict = {"model_version": 0, "model_checkpoint_path": None}
+
+    saved_to = []
+
+    class FakeModel:
+        def save_pretrained(self, path):
+            saved_to.append(path)
+
+    class State:
+        def __init__(self, step):
+            self.global_step = step
+
+    cb = _WeightSyncCallback(ddict, str(tmp_path), interval=1)
+    cb.on_step_end(args=None, state=State(1), control=None, model=FakeModel())
+
+    assert ddict["model_version"] == 1
+    expected = str(tmp_path / "step_1")
+    assert ddict["model_checkpoint_path"] == expected
+    assert saved_to == [expected]
+
+    cb.on_step_end(args=None, state=State(2), control=None, model=FakeModel())
+    assert ddict["model_version"] == 2
+    assert ddict["model_checkpoint_path"] == str(tmp_path / "step_2")
+
+
+def test_weight_sync_callback_respects_interval(tmp_path):
+    from rome.flows.streamflow import _WeightSyncCallback
+
+    ddict = {"model_version": 0, "model_checkpoint_path": None}
+
+    class State:
+        def __init__(self, step):
+            self.global_step = step
+
+    cb = _WeightSyncCallback(ddict, str(tmp_path), interval=3)
+
+    cb.on_step_end(args=None, state=State(1), control=None, model=None)
+    cb.on_step_end(args=None, state=State(2), control=None, model=None)
+    assert ddict["model_version"] == 0  # not at interval
+
+    cb.on_step_end(args=None, state=State(3), control=None, model=None)
+    assert ddict["model_version"] == 1
+    assert ddict["model_checkpoint_path"] == str(tmp_path / "step_1")
+
+
+def test_maybe_reload_weights_no_op_when_version_unchanged():
+    model = object()
+    ddict = {"model_version": 0, "model_checkpoint_path": None}
+
+    new_model, new_version = StreamFlow._maybe_reload_weights(
+        model, model_config=None, workflow_ddict=ddict, local_version=0,
+    )
+    assert new_model is model
+    assert new_version == 0
+
+
+def test_maybe_reload_weights_reloads_when_version_newer(monkeypatch):
+    sentinel_old = object()
+    sentinel_new = object()
+    calls = []
+
+    def fake_reload(model, model_config, checkpoint_path):
+        calls.append((model, checkpoint_path))
+        return sentinel_new
+
+    monkeypatch.setattr("rome.flows.streamflow.reload_lora", fake_reload)
+
+    ddict = {"model_version": 3, "model_checkpoint_path": "/some/path"}
+
+    new_model, new_version = StreamFlow._maybe_reload_weights(
+        sentinel_old, model_config="mc", workflow_ddict=ddict, local_version=1,
+    )
+    assert new_model is sentinel_new
+    assert new_version == 3
+    assert calls == [(sentinel_old, "/some/path")]
+
+
+def test_maybe_reload_weights_skips_when_path_is_none(monkeypatch):
+    """A newer version without a path yet (e.g. trainer mid-write) is a no-op."""
+    monkeypatch.setattr(
+        "rome.flows.streamflow.reload_lora",
+        lambda *a, **kw: pytest.fail("should not be called"),
+    )
+
+    model = object()
+    ddict = {"model_version": 2, "model_checkpoint_path": None}
+
+    new_model, new_version = StreamFlow._maybe_reload_weights(
+        model, model_config=None, workflow_ddict=ddict, local_version=0,
+    )
+    # Version advances so we won't keep retrying every batch, but model
+    # stays put.
+    assert new_model is model
+    assert new_version == 2
+
+
 def test_scorer_gather_does_not_overwrite_existing():
     def reward_a(*a, **kw):
         return [0.0]

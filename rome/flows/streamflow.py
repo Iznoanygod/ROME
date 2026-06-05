@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Any, Callable, List, Optional
 
 import torch
@@ -7,13 +8,47 @@ from rose.learner import SequentialReinforcementLearner
 from rose.metrics import GREATER_THAN_THRESHOLD
 from transformers import GenerationConfig
 
+try:
+    from transformers import TrainerCallback
+except ImportError:  # transformers not installed (test environment)
+    class TrainerCallback:  # type: ignore[no-redef]
+        pass
+
 from dragon.data.ddict import DDict
 from dragon.native.event import Event
 
 from rome.config import ModelConfig
 from rome.trainer import Trainer
-from rome.utils import load_model
+from rome.utils import load_model, reload_lora
 from rome.workflow import Workflow
+
+
+class _WeightSyncCallback(TrainerCallback):
+    """Persist the LoRA adapter and bump ``model_version`` after each step.
+
+    The streaming generators poll ``workflow_ddict["model_version"]``
+    between batches and reload from ``workflow_ddict["model_checkpoint_path"]``
+    when they see a newer version — the red weight-sync regions on the
+    timeline.
+    """
+
+    def __init__(self, workflow_ddict, checkpoint_dir: str, interval: int = 1):
+        self._workflow_ddict = workflow_ddict
+        self._checkpoint_dir = checkpoint_dir
+        self._interval = max(1, interval)
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % self._interval != 0:
+            return control
+        version = self._workflow_ddict.get("model_version", 0) + 1
+        path = os.path.join(self._checkpoint_dir, f"step_{version}")
+        model = kwargs.get("model")
+        if model is not None and hasattr(model, "save_pretrained"):
+            os.makedirs(path, exist_ok=True)
+            model.save_pretrained(path)
+        self._workflow_ddict["model_checkpoint_path"] = path
+        self._workflow_ddict["model_version"] = version
+        return control
 
 
 class StreamFlowConfig:
@@ -43,6 +78,12 @@ class StreamFlowConfig:
     max_buffer_per_prompt : int, optional
         Soft upper bound on completions buffered per prompt before
         generators throttle. Default is 32.
+    checkpoint_dir : str, optional
+        Directory where the trainer writes the latest LoRA adapter for
+        streaming generators to pick up. If ``None``, weight syncing is
+        disabled and generators keep the model they loaded at startup.
+    checkpoint_interval : int, optional
+        How many trainer steps between checkpoint writes. Default 1.
     """
 
     def __init__(
@@ -56,6 +97,8 @@ class StreamFlowConfig:
         num_generations_per_prompt: int = 4,
         prompts: Optional[List[str]] = None,
         max_buffer_per_prompt: int = 32,
+        checkpoint_dir: Optional[str] = None,
+        checkpoint_interval: int = 1,
     ):
         self.iterations = iterations
         self.reward_threshold = reward_threshold
@@ -66,6 +109,8 @@ class StreamFlowConfig:
         self.num_generations_per_prompt = num_generations_per_prompt
         self.prompts = list(prompts) if prompts is not None else []
         self.max_buffer_per_prompt = max_buffer_per_prompt
+        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_interval = checkpoint_interval
 
 
 class StreamFlow(Workflow):
@@ -116,6 +161,22 @@ class StreamFlow(Workflow):
         self.flow_config = flow_config
         self._generator_tasks = []
         self._scorer_tasks = []
+
+    @staticmethod
+    def _maybe_reload_weights(model, model_config, workflow_ddict, local_version):
+        """Reload LoRA weights if the trainer has published a newer version.
+
+        Returns ``(model, new_local_version)``. Called by generator tasks
+        between batches — corresponds to the red weight-load regions on
+        the inference rows of the timeline.
+        """
+        remote_version = workflow_ddict.get("model_version", 0)
+        if remote_version <= local_version:
+            return model, local_version
+        path = workflow_ddict.get("model_checkpoint_path")
+        if path:
+            model = reload_lora(model, model_config, path)
+        return model, remote_version
 
     @staticmethod
     def _default_generator_func(prompts, model, tokenizer, generation_config):
@@ -235,9 +296,11 @@ class StreamFlow(Workflow):
         model_config = self.model_config
         evaluate_func = self.evaluate_func
 
-        # seed the prompt pool
+        # seed the prompt pool and weight-sync state
         workflow_ddict["generation_prompts"] = list(self.flow_config.prompts)
         workflow_ddict["generator_outputs"] = {}
+        workflow_ddict["model_version"] = 0
+        workflow_ddict["model_checkpoint_path"] = None
         for i in range(self.flow_config.num_generators):
             workflow_ddict[f"generator_{i}_input"] = {}
             workflow_ddict[f"generator_{i}_output"] = {}
@@ -260,6 +323,7 @@ class StreamFlow(Workflow):
             _max_buffer,
         ):
             model, tokenizer = load_model(model_config)
+            local_version = 0
 
             while not _terminate_event.is_set():
                 prompts_to_run = []
@@ -276,6 +340,11 @@ class StreamFlow(Workflow):
                     continue
 
                 for i in range(0, len(prompts_to_run), batch_size):
+                    # Between batches, swap in a fresh adapter if the
+                    # trainer has published one — red region on Node 1/2.
+                    model, local_version = StreamFlow._maybe_reload_weights(
+                        model, model_config, _workflow_ddict, local_version,
+                    )
                     batch = prompts_to_run[i : i + batch_size]
                     outputs = StreamFlow._default_generator_func(
                         batch, model, tokenizer, model_config.generation_config
@@ -324,6 +393,18 @@ class StreamFlow(Workflow):
                     output_dict[key] = score
                     scored_keys.add(key)
                 _workflow_ddict[_output_key] = output_dict
+
+        # Inject the weight-sync callback so the trainer writes a fresh
+        # adapter (and bumps the version key) at every step — red region
+        # on Node 0 of the timeline.
+        if self.flow_config.checkpoint_dir is not None:
+            weight_sync_cb = _WeightSyncCallback(
+                workflow_ddict=workflow_ddict,
+                checkpoint_dir=self.flow_config.checkpoint_dir,
+                interval=self.flow_config.checkpoint_interval,
+            )
+            existing_cbs = getattr(trainer, "_trainer_callbacks", None) or []
+            trainer._trainer_callbacks = list(existing_cbs) + [weight_sync_cb]
 
         @rl.update_task(as_executable=False)
         async def train_model(model_config=model_config, workflow_ddict=workflow_ddict):
