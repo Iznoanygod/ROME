@@ -9,7 +9,7 @@ from trl import GRPOConfig, GRPOTrainer
 
 from rome.config import ModelConfig
 from rome.trainer import Trainer
-from rome.utils import load_model
+from rome.utils import bump_weight_version, load_model, save_model
 from datasets import Dataset
 
 from dragon.data.ddict import DDict
@@ -164,4 +164,9 @@ class GRPO(Trainer):
             )
 
         trainer.train()
+
+        # Persist updated weights and bump the version counter so long-lived
+        # generator tasks reload between batches on their next loop pass.
+        save_model(model, model_config)
+        bump_weight_version(workflow_ddict)
 

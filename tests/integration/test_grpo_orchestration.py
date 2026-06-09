@@ -133,6 +133,48 @@ def test_default_rollout_func_round_trips_prompts(monkeypatch):
     }
 
 
+def test_train_saves_model_and_bumps_weight_version(monkeypatch):
+    """After trainer.train finishes, GRPO should persist weights and bump the
+    weight-version counter so generator tasks reload between batches."""
+    from rome.config import ModelConfig
+    from rome.utils import WEIGHT_VERSION_KEY
+
+    g = _make_grpo(reward_funcs=[])
+
+    # Replace heavy components with stubs that record interactions.
+    fake_model = object()
+    fake_tokenizer = object()
+    monkeypatch.setattr(
+        "rome.train.grpo.load_model", lambda cfg: (fake_model, fake_tokenizer)
+    )
+
+    save_calls = []
+    monkeypatch.setattr(
+        "rome.train.grpo.save_model",
+        lambda model, cfg: save_calls.append((model, cfg)) or "/tmp/saved",
+    )
+
+    class FakeTrainer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+        def train(self):
+            FakeTrainer.trained = True
+
+    monkeypatch.setattr("rome.train.grpo.GRPOTrainer", FakeTrainer)
+
+    ddict = {WEIGHT_VERSION_KEY: 2}
+    g.train(
+        model_config=ModelConfig(base_model_name="b"),
+        dataset=None,
+        workflow_ddict=ddict,
+    )
+
+    # Trainer ran, weights were saved, version was bumped.
+    assert FakeTrainer.trained is True
+    assert save_calls and save_calls[0][0] is fake_model
+    assert ddict[WEIGHT_VERSION_KEY] == 3
+
+
 def test_default_rollout_func_waits_for_missing_output(monkeypatch):
     """If generator_outputs is missing a request, rollout sleeps and re-reads."""
     g = _make_grpo(reward_funcs=[])

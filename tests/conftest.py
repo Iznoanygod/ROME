@@ -81,6 +81,10 @@ def _stub_if_missing() -> None:
         m.get_peft_model = lambda model, cfg: model
         m.LoraConfig = _StubConfig
         m.PeftModel = type("PeftModel", (), {})
+        m.set_peft_model_state_dict = lambda model, state_dict: None
+        m.load_peft_weights = lambda path, **kw: {}
+        peft_utils = _ensure_module("peft.utils")
+        peft_utils.load_peft_weights = m.load_peft_weights
 
     try:
         import radical.asyncflow
