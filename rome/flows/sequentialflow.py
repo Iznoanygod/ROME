@@ -15,7 +15,7 @@ from dragon.native.event import Event
 
 from rome.config import ModelConfig
 from rome.trainer import Trainer
-from rome.utils import load_model, read_weight_version, reload_model
+from rome.utils import load_model, maybe_reload_weights
 from rome.workflow import Workflow
 
 class SequentialFlowConfig():
@@ -90,12 +90,13 @@ class SequentialFlow(Workflow):
         self._generator_tasks = []
         self._scorer_tasks = []
 
+    @staticmethod
     def _default_generator_func(prompts: list[str], model, tokenizer, generation_config):
         inputs = tokenizer.apply_chat_template(
-            prompts, 
-            add_generation_prompt=True, 
-            tokenize=True, 
-            padding=True, 
+            prompts,
+            add_generation_prompt=True,
+            tokenize=True,
+            padding=True,
             return_tensors="pt"
         ).to(model.device)
         with torch.no_grad():
@@ -200,9 +201,8 @@ class SequentialFlow(Workflow):
 
             # load models
             model, tokenizer = load_model(model_config)
-            current_weight_version = read_weight_version(_workflow_ddict)
-            #generation config
-            
+            local_version = 0
+
             while not _terminate_event.is_set():
                 requests_to_process = []
                 # requests is dictionary request_id -> prompt
@@ -212,21 +212,20 @@ class SequentialFlow(Workflow):
                         continue
                     # add to processing list
                     requests_to_process.append(request_id)
-                
+
                 # process requests
                 if len(requests_to_process) > 0:
                     for i in range(0, len(requests_to_process), batch_size):
-                        new_version = read_weight_version(
-                            _workflow_ddict, default=current_weight_version
+                        model, local_version = maybe_reload_weights(
+                            model, model_config, _workflow_ddict, local_version,
                         )
-                        if new_version != current_weight_version:
-                            reload_model(model, model_config)
-                            current_weight_version = new_version
 
                         batch = requests_to_process[i:i+batch_size]
                         # generate outputs for batch
                         prompts = [requests[request_id] for request_id in batch]
-                        outputs = _default_generator_func(prompts, model, tokenizer, model_config.generation_config)
+                        outputs = SequentialFlow._default_generator_func(
+                            prompts, model, tokenizer, model_config.generation_config,
+                        )
 
                         # put outputs in workflow_ddict
                         output_dict = _workflow_ddict[_output_key]

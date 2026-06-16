@@ -164,5 +164,5 @@ class GRPO(Trainer):
             )
 
         trainer.train()
-        save_model(model, model_config)
-        bump_weight_version(workflow_ddict)
+        path = save_model(model, model_config)
+        bump_weight_version(workflow_ddict, path)
