@@ -20,9 +20,6 @@ requires-python = ">=3.9"
 dependencies = [
     "numpy",
     "torch",
-    "transformers",
-    "peft",
-    "trl",
     "datasets",
     "biopython==1.80",
     "radical.asyncflow",
@@ -31,6 +28,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+llm = [
+    "transformers",
+    "peft",
+    "trl",
+]
 test = [
     "pytest>=7",
     "pytest-mock",

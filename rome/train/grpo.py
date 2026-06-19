@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from trl import GRPOConfig, GRPOTrainer
+if TYPE_CHECKING:
+    from trl import GRPOConfig, GRPOTrainer
 
 from rome.config import ModelConfig
 from rome.trainer import Trainer
@@ -48,6 +51,7 @@ class GRPO(Trainer):
         self._rollout_func = rollout_func
         self._grpo_config = grpo_config
         if self._grpo_config is None:
+            from trl import GRPOConfig
             self._grpo_config = GRPOConfig(
                 # Parameters that control training
                 learning_rate=5e-6,
@@ -92,7 +96,7 @@ class GRPO(Trainer):
         
 
     # default rollout_func to use for GRPO when none is provided and using generator tasks
-    def _default_rollout_func(self, prompts: list[str], trainer: GRPOTrainer, **kwargs):
+    def _default_rollout_func(self, prompts: list[str], trainer: "GRPOTrainer", **kwargs):
         import uuid
         # give each prompt a request_id, put in the workflow_ddict
         workflow_ddict = self._workflow_ddict
@@ -142,6 +146,7 @@ class GRPO(Trainer):
             else:
                 local_reward_funcs.append(reward_func)
         local_reward_funcs = local_reward_funcs + [self._reward_func_wrapper(reward_func) for reward_func in flow_reward_funcs]
+        from trl import GRPOTrainer
         if use_default_rollout:
             trainer = GRPOTrainer(
                 model=model,

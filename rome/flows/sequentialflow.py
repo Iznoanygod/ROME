@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from typing import Any, Callable, Optional
 
@@ -8,7 +10,6 @@ import torch
 from radical.asyncflow import WorkflowEngine
 from rose.learner import SequentialReinforcementLearner
 from rose.metrics import GREATER_THAN_THRESHOLD
-from transformers import GenerationConfig
 
 from dragon.data.ddict import DDict
 from dragon.native.event import Event

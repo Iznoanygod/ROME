@@ -6,9 +6,10 @@ import torch
 from radical.asyncflow import WorkflowEngine
 from rose.learner import SequentialReinforcementLearner
 from rose.metrics import GREATER_THAN_THRESHOLD
-from transformers import GenerationConfig
-
-from transformers import TrainerCallback
+try:
+    from transformers import TrainerCallback as _TrainerCallback
+except ImportError:
+    _TrainerCallback = object  # type: ignore[assignment,misc]
 
 from dragon.data.ddict import DDict
 from dragon.native.event import Event
@@ -18,7 +19,7 @@ from rome.trainer import Trainer
 from rome.utils import load_model, reload_lora
 from rome.workflow import Workflow
 
-class _WeightSyncCallback(TrainerCallback):
+class _WeightSyncCallback(_TrainerCallback):
     """Persist the LoRA adapter and bump ``model_version`` after each step.
     The streaming generators poll ``workflow_ddict["model_version"]``
     between batches and reload from ``workflow_ddict["model_checkpoint_path"]``
