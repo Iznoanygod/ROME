@@ -1,9 +1,17 @@
-"""Science-tool integration seams.
+"""Science-tool integration seams (IMPRESS update_usecase/protein_binding layout).
 
 Each task is a thin shell over an *external* tool — foundry's ProteinMPNN
-engine, AlphaFold2 (containerized), the IMPRESS pLDDT/pTM/pAE extractor,
-and foundry's MPNN trainer. Per the project constraint, none of the
-science code is modified or vendored here; we shell out or lazy-import.
+engine, Boltz / AlphaFold2 (containerized or venv), IMPRESS's
+plddt_extract_pipeline.py, and foundry's MPNN trainer. Per the project
+constraint, none of the science code is modified or vendored here; we
+shell out or lazy-import.
+
+The five hook entry points each correspond to an IMPRESS stage:
+  * ``mpnn_generate_loop``       — s1
+  * ``predict_structure_task``   — s4 (Boltz default, AF2 alternate)
+  * ``stage_prediction_task``    — s4_post_exec
+  * ``extract_metrics_task``     — s5
+  * ``mpnn_train_task``          — ROME-only training round
 
 These are pure async functions so they can be wrapped with
 ``asyncflow.function_task`` / ``executable_task`` decorators at orchestrator
@@ -13,15 +21,16 @@ construction time without baking the engine reference into module import.
 import asyncio
 import csv
 import os
+import shutil
 import subprocess
 import uuid
 from typing import Any, Dict, List, Optional
 
-from rome.protein.schema import AF2Result, BackboneSpec, SequenceRecord
+from rome.protein.schema import BackboneSpec, PredictionResult, SequenceRecord
 
 
 # ---------------------------------------------------------------------------
-# MPNN generation (streaming worker body)
+# s1 — MPNN streaming generation
 # ---------------------------------------------------------------------------
 
 async def mpnn_generate_loop(
@@ -181,67 +190,129 @@ class _LegacyMPNNEngine:
 
 
 # ---------------------------------------------------------------------------
-# AlphaFold2 prediction
+# s4 — Structure prediction (Boltz default, AF2 alternate)
 # ---------------------------------------------------------------------------
 
-async def af2_predict_task(
+async def predict_structure_task(
     config: Any,
-    fasta_dir: str,
-    fasta_filename: str,
+    fasta_path: str,
     output_dir: str,
 ) -> str:
-    """Run AlphaFold2 multimer on a single FASTA. Returns the output dir.
+    """Run the structure predictor on a single paired FASTA.
 
-    Wraps a script following IMPRESS's ``af2_multimer_reduced.sh`` interface:
-        <script> <fasta_dir> <fasta_filename> <output_dir>
-    The script + container + database paths are taken from ``config``.
+    Wraps a script following the IMPRESS update_usecase/protein_binding
+    branch's two-arg signature (``s4_boltz.sh`` / ``s4_alphafold.sh``):
+        <script> <fasta_path> <output_dir>
+
+    Boltz caches MSA per fasta-stem in ``boltz_results_<stem>/msa/`` and
+    reuses it across runs — IMPRESS's wrapper deletes the stale MSA dir
+    before each invocation, so ROME doesn't have to.
     """
-    if not config.af2_script:
-        raise ValueError("config.af2_script must be set for af2_predict_task")
+    if not config.predict_script:
+        raise ValueError("config.predict_script must be set for predict_structure_task")
     os.makedirs(output_dir, exist_ok=True)
-    cmd = [config.af2_script, fasta_dir, fasta_filename, output_dir]
+    cmd = [config.predict_script, fasta_path, output_dir]
     env = os.environ.copy()
-    if config.af2_image:
-        env["AF2_IMAGE"] = config.af2_image
-    if config.af2_db_root:
-        env["AF2_DB_ROOT"] = config.af2_db_root
+    if config.predict_cache_dir:
+        env["BOLTZ_CACHE"] = config.predict_cache_dir
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
-    stdout, stderr = await proc.communicate()
+    _, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError(
-            f"af2_script failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
+            f"predict_script failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
         )
     return output_dir
 
 
 # ---------------------------------------------------------------------------
-# Extract pLDDT / pTM / pAE
+# s4_post_exec — Stage predictor outputs into canonical paths + rename chains
+# ---------------------------------------------------------------------------
+
+async def stage_prediction_task(
+    config: Any,
+    prediction_output_dir: str,
+    best_model_dst: str,
+    best_ptm_dst: str,
+    backbone_id: str,
+) -> str:
+    """Copy best model + confidence JSON; rename multi-char Boltz chains.
+
+    Boltz writes outputs under:
+        <prediction_output_dir>/boltz_results_<bid>/predictions/<bid>/
+            <bid>_model_0.pdb
+            confidence_<bid>_model_0.json
+    with multi-char chain IDs taken from the paired-FASTA record names
+    (``pdz`` / ``pep``). Downstream consumers (PyRosetta in s5,
+    ProteinMPNN for the next pass) require single-char PDB chains, so we
+    rename ``pdz`` -> ``A`` and ``pep`` -> ``B`` while staging.
+    """
+    src_root = os.path.join(
+        prediction_output_dir, f"boltz_results_{backbone_id}",
+        "predictions", backbone_id,
+    )
+    src_pdb = os.path.join(src_root, f"{backbone_id}_model_0.pdb")
+    src_json = os.path.join(src_root, f"confidence_{backbone_id}_model_0.json")
+
+    os.makedirs(os.path.dirname(best_model_dst), exist_ok=True)
+    os.makedirs(os.path.dirname(best_ptm_dst), exist_ok=True)
+
+    _copy_pdb_rename_chains(
+        src_pdb, best_model_dst,
+        rename_map={"pdz": "A", "pep": "B"},
+    )
+    shutil.copyfile(src_json, best_ptm_dst)
+    return best_model_dst
+
+
+def _copy_pdb_rename_chains(src: str, dst: str, rename_map: Dict[str, str]) -> None:
+    """Stream a PDB file, replacing Boltz multi-char chain IDs with single chars.
+
+    Logic mirrors IMPRESS's ``_copy_pdb_rename_chains`` exactly: Boltz writes
+    the FASTA record name (e.g. ``pdz``, ``pep``) into PDB columns 22..24
+    (0-indexed 21..24), overflowing into the resSeq region. The replacement
+    drops a single char at col 21 and re-anchors the rest of the line from
+    col 24 — the resulting line is two chars shorter, matching what
+    downstream PyRosetta / next-pass ProteinMPNN expect.
+    """
+    with open(src) as fin, open(dst, "w") as fout:
+        for line in fin:
+            if line.startswith(("ATOM", "HETATM", "TER")):
+                chain = line[21:24]
+                if chain in rename_map:
+                    line = line[:21] + rename_map[chain] + line[24:]
+            fout.write(line)
+
+
+# ---------------------------------------------------------------------------
+# s5 — Extract pLDDT / pTM / pAE
 # ---------------------------------------------------------------------------
 
 async def extract_metrics_task(
     config: Any,
     pipeline_id: str,
     cycle: int,
-    af_output_dir: str,
+    prediction_root: str,
     csv_out_path: str,
-) -> List[AF2Result]:
+) -> List[PredictionResult]:
     """Run IMPRESS's pLDDT/pTM/pAE extractor and parse its CSV.
 
-    Shells out to ``config.extract_script`` with arguments matching
-    ``plddt_extract_pipeline.py``:
-        <script> --iteration <cycle> --name <pipeline_id> --base <af_output_dir>
-            --out <csv_out_path>
+    Shells out to ``config.extract_script`` (default
+    ``scripts/s5_plddt_extract.sh``) with the IMPRESS update-branch
+    signature:
+        <script> <base_path> <iter> <out_name>
+
+    ``prediction_root`` is the directory containing ``best_models/`` and
+    ``best_ptm/``; the extract script reads PDBs + JSONs from there.
     """
     if not config.extract_script:
         raise ValueError("config.extract_script must be set for extract_metrics_task")
     cmd = [
         config.extract_script,
-        "--iteration", str(cycle),
-        "--name", pipeline_id,
-        "--base", af_output_dir,
-        "--out", csv_out_path,
+        prediction_root,
+        str(cycle),
+        csv_out_path,
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -251,27 +322,26 @@ async def extract_metrics_task(
         raise RuntimeError(
             f"extract_script failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
         )
-    return _parse_extract_csv(csv_out_path)
+    return _parse_extract_csv(csv_out_path, prediction_root)
 
 
-def _parse_extract_csv(csv_path: str) -> List[AF2Result]:
+def _parse_extract_csv(csv_path: str, prediction_root: str) -> List[PredictionResult]:
     """Parse the CSV emitted by IMPRESS's extractor: ID, avg_plddt, ptm, avg_pae."""
-    results: List[AF2Result] = []
+    results: List[PredictionResult] = []
     with open(csv_path) as fd:
         reader = csv.reader(fd)
-        header = next(reader, None)
+        _ = next(reader, None)  # header
         for row in reader:
             if not row:
                 continue
             ident, plddt, ptm, pae = row[0], row[1], row[2], row[3]
-            # seq_uid is encoded by callers into the ID; backbone_id parsed from prefix
             seq_uid = ident
             backbone_id = ident.split(".")[0]
             results.append(
-                AF2Result(
+                PredictionResult(
                     seq_uid=seq_uid,
                     backbone_id=backbone_id,
-                    pdb_path=os.path.join(os.path.dirname(csv_path), f"{ident}.pdb"),
+                    pdb_path=os.path.join(prediction_root, "best_models", f"{backbone_id}.pdb"),
                     pLDDT=float(plddt),
                     pTM=float(ptm),
                     pAE=float(pae),
@@ -282,7 +352,7 @@ def _parse_extract_csv(csv_path: str) -> List[AF2Result]:
 
 
 # ---------------------------------------------------------------------------
-# MPNN training
+# MPNN training (ROME extension, not part of the IMPRESS pipeline)
 # ---------------------------------------------------------------------------
 
 async def mpnn_train_task(

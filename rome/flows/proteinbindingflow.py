@@ -45,7 +45,7 @@ from rome.protein.criteria import (
 from rome.protein.hooks import TaskHooks
 from rome.protein.pipeline import ProteinBindingPipeline
 from rome.protein.ranker import LogLikelihoodRanker
-from rome.protein.schema import AF2Result, BackboneSpec
+from rome.protein.schema import BackboneSpec, PredictionResult
 
 
 class ProteinBindingFlow:
@@ -249,7 +249,7 @@ class ProteinBindingFlow:
         either KEEPs, MIGRATEs, or DROPs.
         """
         backbones_to_resolve = list(pipeline.iter_seqs.keys())
-        cycle_metrics: List[AF2Result] = []
+        cycle_metrics: List[PredictionResult] = []
         migrating: List[str] = []
 
         # Reset fallback counters at cycle start.
@@ -288,12 +288,12 @@ class ProteinBindingFlow:
     ):
         """AF2 + criterion in a retry loop until a non-FALLBACK decision.
 
-        Returns ``(Decision, AF2Result | None)``. On KEEP/MIGRATE the
+        Returns ``(Decision, PredictionResult | None)``. On KEEP/MIGRATE the
         consumed L1 candidate (plus any fallback losers ahead of it) is
         popped from ``ranked_candidates``; on DROP the bucket is left
         alone since the backbone is no longer tracked.
         """
-        last_af2: Optional[AF2Result] = None
+        last_af2: Optional[PredictionResult] = None
         last_decision: Optional[Decision] = None
         while True:
             record = await self._next_l1_candidate(pipeline, backbone_id)
@@ -383,64 +383,110 @@ class ProteinBindingFlow:
         pipeline: ProteinBindingPipeline,
         backbone_id: str,
         record: dict,
-    ) -> List[AF2Result]:
-        # Materialize a FASTA the AF2 wrapper expects.
-        seq_uid = record["seq_uid"]
-        fasta_dir = pipeline.mpnn_out_path
-        fasta_name = f"{seq_uid}.fasta"
-        fasta_path = os.path.join(fasta_dir, fasta_name)
-        os.makedirs(fasta_dir, exist_ok=True)
-        with open(fasta_path, "w") as fd:
-            fd.write(f">{seq_uid}|{backbone_id}\n{record['sequence']}\n")
+    ) -> List[PredictionResult]:
+        """Run s3 -> s4 -> s4_post_exec -> s5 for a single L1 candidate.
 
-        # AF2 (GPU, container) — hook-injected.
-        af_out_dir = os.path.join(pipeline.af_out_path, seq_uid)
-        await self.hooks.af2_predict(
-            self.config, fasta_dir, fasta_name, af_out_dir
+        Mirrors the IMPRESS update_usecase/protein_binding stage ordering:
+        write the paired FASTA, predict the dimer structure, stage the
+        best model + confidence JSON into canonical paths (renaming
+        multi-char Boltz chains), then run the extractor.
+        """
+        seq_uid = record["seq_uid"]
+        spec: BackboneSpec = pipeline.iter_seqs[backbone_id]
+
+        # s3 — paired FASTA (designed sequence + target peptide).
+        os.makedirs(pipeline.fasta_path, exist_ok=True)
+        fasta_path = os.path.join(pipeline.fasta_path, f"{backbone_id}.fa")
+        self._write_paired_fasta(fasta_path, backbone_id, record["sequence"], spec)
+
+        # s4 — structure prediction (GPU). Output dir is per-backbone; the
+        # nested boltz_results_<bid>/predictions/<bid>/ layout is the
+        # predictor's, not ours.
+        predict_out_dir = os.path.join(pipeline.dimer_models_path, backbone_id)
+        await self.hooks.predict_structure(
+            self.config, fasta_path, predict_out_dir
         )
 
-        # Extract pLDDT/pTM/pAE — hook-injected.
+        # s4_post_exec — stage best model + confidence JSON; rename chains.
+        best_model_dst = os.path.join(pipeline.best_models_path, f"{backbone_id}.pdb")
+        best_ptm_dst = os.path.join(pipeline.best_ptm_path, f"{backbone_id}.json")
+        await self.hooks.stage_prediction(
+            self.config,
+            predict_out_dir,
+            best_model_dst,
+            best_ptm_dst,
+            backbone_id,
+        )
+
+        # s5 — pLDDT/pTM/pAE extraction. The extractor reads from
+        # ``<prediction_root>/best_models`` and ``<prediction_root>/best_ptm``
+        # (parent of the two staging dirs).
+        prediction_root = os.path.dirname(pipeline.best_models_path)
         csv_path = pipeline.stats_csv(cycle=pipeline.passes)
         results = await self.hooks.extract_metrics(
             self.config,
             pipeline.pipeline_id,
             pipeline.passes,
-            af_out_dir,
+            prediction_root,
             csv_path,
         )
-        # tag the seq_uid back into the results (the extractor keys by file id)
         for r in results:
             r.backbone_id = backbone_id
             r.seq_uid = seq_uid
         return results
 
+    @staticmethod
+    def _write_paired_fasta(
+        fasta_path: str,
+        backbone_id: str,
+        designed_sequence: str,
+        spec: BackboneSpec,
+    ) -> None:
+        """Write the paired FASTA the structure predictor consumes.
+
+        Layout matches IMPRESS's s3 stage:
+            >designed_chain_name|<backbone_id>
+            <designed_sequence>
+            >target_chain_name|<backbone_id>
+            <target_peptide>
+
+        When ``spec.target_peptide`` is None (monomer mode) only the
+        designed record is written.
+        """
+        with open(fasta_path, "w") as fd:
+            fd.write(f">{spec.designed_chain_name}|{backbone_id}\n")
+            fd.write(designed_sequence + "\n")
+            if spec.target_peptide:
+                fd.write(f">{spec.target_chain_name}|{backbone_id}\n")
+                fd.write(spec.target_peptide + "\n")
+
     def _record_cycle(
         self,
         pipeline: ProteinBindingPipeline,
-        cycle_metrics: List[AF2Result],
+        cycle_metrics: List[PredictionResult],
     ) -> None:
         cycle_results = self._workflow_ddict.get("cycle_results", {}) or {}
-        for af2 in cycle_metrics:
-            bid = af2.backbone_id
+        for pr in cycle_metrics:
+            bid = pr.backbone_id
             bucket = cycle_results.get(bid, [])
             bucket.append(
                 {
                     "pipeline_id": pipeline.pipeline_id,
                     "backbone_id": bid,
                     "cycle": pipeline.passes,
-                    "seq_uid": af2.seq_uid,
+                    "seq_uid": pr.seq_uid,
                     "sequence": "",  # caller resolves from L1 buffer if needed
                     "produced_under_version": self._workflow_ddict.get(
                         "model_version", 0
                     ),
-                    "af2_result": af2.__dict__,
+                    "prediction": pr.__dict__,
                 }
             )
             cycle_results[bid] = bucket
             pipeline.current_scores[bid] = {
-                "pLDDT": af2.pLDDT,
-                "pTM": af2.pTM,
-                "pAE": af2.pAE,
+                "pLDDT": pr.pLDDT,
+                "pTM": pr.pTM,
+                "pAE": pr.pAE,
             }
         self._workflow_ddict["cycle_results"] = cycle_results
 

@@ -215,7 +215,7 @@ def test_corpus_curator_admits_passing_entries_and_fires_training():
                     {  # passes
                         "backbone_id": "b1", "cycle": 0, "sequence": "AAA",
                         "produced_under_version": 0,
-                        "af2_result": {
+                        "prediction": {
                             "seq_uid": "s1", "backbone_id": "b1",
                             "pdb_path": "/tmp/p.pdb",
                             "pLDDT": 85.0, "pTM": 0.85, "pAE": 4.0,
@@ -224,7 +224,7 @@ def test_corpus_curator_admits_passing_entries_and_fires_training():
                     {  # passes
                         "backbone_id": "b1", "cycle": 1, "sequence": "BBB",
                         "produced_under_version": 0,
-                        "af2_result": {
+                        "prediction": {
                             "seq_uid": "s2", "backbone_id": "b1",
                             "pdb_path": "/tmp/p.pdb",
                             "pLDDT": 90.0, "pTM": 0.9, "pAE": 3.0,
@@ -233,7 +233,7 @@ def test_corpus_curator_admits_passing_entries_and_fires_training():
                     {  # fails pTM threshold
                         "backbone_id": "b1", "cycle": 2, "sequence": "CCC",
                         "produced_under_version": 0,
-                        "af2_result": {
+                        "prediction": {
                             "seq_uid": "s3", "backbone_id": "b1",
                             "pdb_path": "/tmp/p.pdb",
                             "pLDDT": 95.0, "pTM": 0.5, "pAE": 4.0,

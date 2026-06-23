@@ -46,7 +46,7 @@ def _cfg(tmp_path, structures, **over):
         seqs_per_mpnn_call=4,
         max_buffer_per_backbone=8,
         ll_top_k_per_backbone=2,
-        num_af2_workers=1,
+        num_predict_workers=1,
         max_cycles=2,
         max_fallback_sequences=2,
         max_sub_pipelines=2,
@@ -64,8 +64,11 @@ def _cfg(tmp_path, structures, **over):
 
 @pytest.mark.fast
 def test_flow_runs_end_to_end_on_dummies(tmp_path):
-    """All four tools called, cycles complete, no crashes."""
+    """All five tools called, cycles complete, paired FASTAs written."""
     structures = _backbones(tmp_path, ["b1", "b2"])
+    # Carry a target peptide so s3 writes paired FASTAs.
+    for s in structures:
+        s.target_peptide = "EGYQDYEPEA"
     recorder = DummyRecorder()
     plan = ScorePlan(default=(85.0, 0.85, 3.5))  # always-improving → all KEEPs
 
@@ -80,14 +83,27 @@ def test_flow_runs_end_to_end_on_dummies(tmp_path):
     sampled_bids = {s["backbone_id"] for s in recorder.mpnn_samples}
     assert sampled_bids == {"b1", "b2"}
 
-    # AF2 + extract each ran at least max_cycles per backbone
-    assert len(recorder.af2_calls) >= 2 * 2
+    # Predict + stage + extract each ran at least max_cycles per backbone
+    assert len(recorder.predict_calls) >= 2 * 2
+    assert len(recorder.stage_calls) >= 2 * 2
     assert len(recorder.extract_calls) >= 2 * 2
 
     # Cycle results recorded in the ddict
     cycle_results = flow._workflow_ddict["cycle_results"]
     for bid in ("b1", "b2"):
         assert len(cycle_results[bid]) == 2  # two cycles
+
+    # Paired FASTAs were materialised on disk (s3 wrote them).
+    import glob
+    fasta_files = glob.glob(
+        str(tmp_path / "run" / "af_pipeline_outputs_multi" / "*" / "af" / "fasta" / "*.fa")
+    )
+    assert len(fasta_files) >= 2
+    with open(fasta_files[0]) as fd:
+        contents = fd.read()
+    assert ">pdz|" in contents
+    assert ">pep|" in contents
+    assert "EGYQDYEPEA" in contents
 
 
 @pytest.mark.fast
@@ -175,9 +191,61 @@ def test_degraded_backbone_spawns_sub_pipeline(tmp_path):
     )
     asyncio.run(flow.launch())
 
-    # Sub-pipeline was created → AF2 ran more than just (1 backbone * 2 cycles)
-    # since fallback re-runs AF2 within cycle 1, and the migrated child runs too.
-    assert len(recorder.af2_calls) >= 3
+    # Sub-pipeline was created → predict ran more than just (1 backbone * 2 cycles)
+    # since fallback re-runs predict within cycle 1, and the migrated child runs too.
+    assert len(recorder.predict_calls) >= 3
+
+
+@pytest.mark.fast
+def test_stage_prediction_renames_boltz_chains(tmp_path):
+    """The real stage_prediction_task collapses multi-char Boltz chains
+    (``pdz``/``pep``) to single-char PDB chains (``A``/``B``).
+
+    Important because downstream PyRosetta (s5) and next-pass MPNN (s1)
+    fail on multi-char chains. The dummy doesn't exercise the rename — we
+    call the production function directly with a synthesized predictor
+    output tree.
+    """
+    import asyncio as _asyncio
+    from rome.protein.tasks import stage_prediction_task
+
+    # Set up the Boltz-style nested output layout the staging task expects.
+    predict_dir = tmp_path / "predict"
+    nested = predict_dir / "boltz_results_b1" / "predictions" / "b1"
+    nested.mkdir(parents=True)
+    pdb_in = nested / "b1_model_0.pdb"
+    pdb_in.write_text(
+        # cols 21..23 carry the multi-char chain id; A 90.00 B-factor for pLDDT
+        "ATOM      1  CA  ALA pdz   1       0.000   0.000   0.000  1.00 90.00           C\n"
+        "ATOM      2  CA  ALA pep   1       1.000   1.000   1.000  1.00 90.00           C\n"
+        "TER       3      ALA pep   1\n"
+    )
+    json_in = nested / "confidence_b1_model_0.json"
+    json_in.write_text('{"ptm": 0.85, "iptm": 0.80}\n')
+
+    best_model_dst = tmp_path / "stage" / "best_models" / "b1.pdb"
+    best_ptm_dst = tmp_path / "stage" / "best_ptm" / "b1.json"
+
+    _asyncio.run(
+        stage_prediction_task(
+            config=None,
+            prediction_output_dir=str(predict_dir),
+            best_model_dst=str(best_model_dst),
+            best_ptm_dst=str(best_ptm_dst),
+            backbone_id="b1",
+        )
+    )
+
+    staged = best_model_dst.read_text()
+    # Chain id is now single-char A / B at column 22 (0-indexed 21).
+    lines = [ln for ln in staged.splitlines() if ln.startswith("ATOM")]
+    assert lines[0][21] == "A"
+    assert lines[1][21] == "B"
+    # The multi-char tokens are gone.
+    assert "pdz" not in staged
+    assert "pep" not in staged
+    # Confidence JSON copied verbatim.
+    assert best_ptm_dst.read_text().startswith('{"ptm"')
 
 
 @pytest.mark.fast
@@ -192,10 +260,12 @@ def test_swap_in_real_tool_only_overrides_unset_hooks(tmp_path):
     # Wipe one hook so the default kicks in
     partial = TaskHooks(
         mpnn_generator_loop=hooks.mpnn_generator_loop,
-        af2_predict=hooks.af2_predict,
+        predict_structure=hooks.predict_structure,
+        stage_prediction=hooks.stage_prediction,
         extract_metrics=hooks.extract_metrics,
         mpnn_train=None,
     )
     resolved = partial.resolved()
     assert resolved.mpnn_generator_loop is hooks.mpnn_generator_loop
+    assert resolved.predict_structure is hooks.predict_structure
     assert resolved.mpnn_train is real_tasks.mpnn_train_task

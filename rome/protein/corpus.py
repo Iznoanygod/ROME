@@ -13,7 +13,7 @@ import asyncio
 import uuid
 from typing import Any, Awaitable, Callable, Optional  # noqa: F401
 
-from rome.protein.schema import AF2Result, CorpusEntry
+from rome.protein.schema import CorpusEntry, PredictionResult
 
 
 class CorpusCurator:
@@ -43,7 +43,7 @@ class CorpusCurator:
         # and await it on shutdown.
         self.on_train_scheduled = on_train_scheduled
 
-    def _passes_thresholds(self, r: AF2Result) -> bool:
+    def _passes_thresholds(self, r: PredictionResult) -> bool:
         c = self.config
         if r.pLDDT < c.min_pLDDT_for_corpus:
             return False
@@ -77,23 +77,23 @@ class CorpusCurator:
 
         for backbone_id, summaries in cycle_results.items():
             for s in summaries:
-                af2 = s["af2_result"]
-                seq_uid = af2["seq_uid"]
+                pr = s["prediction"]
+                seq_uid = pr["seq_uid"]
                 if seq_uid in self._consumed_seq_uids:
                     continue
                 self._consumed_seq_uids.add(seq_uid)
 
-                if not self._passes_thresholds(_as_af2(af2)):
+                if not self._passes_thresholds(_as_prediction(pr)):
                     continue
 
                 entry = CorpusEntry(
                     pair_uid=str(uuid.uuid4()),
                     backbone_id=backbone_id,
-                    pdb_path=af2["pdb_path"],
+                    pdb_path=pr["pdb_path"],
                     sequence=s.get("sequence", ""),
-                    pLDDT=af2["pLDDT"],
-                    pTM=af2["pTM"],
-                    pAE=af2["pAE"],
+                    pLDDT=pr["pLDDT"],
+                    pTM=pr["pTM"],
+                    pAE=pr["pAE"],
                     produced_under_version=s.get("produced_under_version", 0),
                     discovered_at_cycle=s["cycle"],
                 )
@@ -114,8 +114,8 @@ class CorpusCurator:
                 self.on_train_scheduled(task)
 
 
-def _as_af2(d: dict) -> AF2Result:
-    return AF2Result(
+def _as_prediction(d: dict) -> PredictionResult:
+    return PredictionResult(
         seq_uid=d["seq_uid"],
         backbone_id=d["backbone_id"],
         pdb_path=d["pdb_path"],

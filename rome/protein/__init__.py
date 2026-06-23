@@ -10,7 +10,8 @@ from rome.protein.config import ProteinBindingFlowConfig
 from rome.protein.schema import (
     BackboneSpec,
     SequenceRecord,
-    AF2Result,
+    PredictionResult,
+    AF2Result,  # back-compat alias for PredictionResult
     CycleResult,
     CorpusEntry,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "ProteinBindingFlowConfig",
     "BackboneSpec",
     "SequenceRecord",
+    "PredictionResult",
     "AF2Result",
     "CycleResult",
     "CorpusEntry",
