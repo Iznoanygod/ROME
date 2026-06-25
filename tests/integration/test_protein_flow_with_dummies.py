@@ -197,6 +197,56 @@ def test_degraded_backbone_spawns_sub_pipeline(tmp_path):
 
 
 @pytest.mark.fast
+def test_per_backbone_score_isolation(tmp_path):
+    """Extract returns rows for every backbone in the staging dir; the
+    flow must attribute each row to the correct backbone — not
+    overwrite all rows with the currently-resolving backbone's id.
+
+    Regression for a bug where the flow rewrote ``backbone_id`` on
+    every row returned by extract, causing a regressing backbone to
+    inherit an improving one's scores.
+    """
+    structures = _backbones(tmp_path, ["good", "bad"])
+    recorder = DummyRecorder()
+    # "good" improves; "bad" stays low. They share a staging dir, so
+    # extract returns rows for both each time it's called.
+    plan = ScorePlan(
+        per_backbone={
+            "good": [(85.0, 0.85, 3.5), (88.0, 0.88, 3.0)],
+            "bad":  [(85.0, 0.85, 3.5), (60.0, 0.50, 7.0)],  # cycle 1 regresses
+        },
+    )
+
+    flow = ProteinBindingFlow(
+        config=_cfg(tmp_path, structures, max_cycles=2, train_mpnn=False),
+        task_hooks=make_dummy_hooks(recorder, plan),
+        state_factory=in_memory_state_factory,
+    )
+    asyncio.run(flow.launch())
+
+    cycle_results = flow._workflow_ddict["cycle_results"]
+
+    def score_at(bid, cycle):
+        for s in cycle_results[bid]:
+            if s["cycle"] == cycle and s["backbone_id"] == bid:
+                return s["prediction"]["pLDDT"]
+        return None
+
+    # The improving backbone's recorded scores match its score plan, not
+    # the regressing one's.
+    assert score_at("good", 0) == 85.0
+    assert score_at("good", 1) == 88.0
+    # The regressing backbone keeps its own (low) scores; it does NOT
+    # inherit "good"'s 88.0.
+    assert score_at("bad", 0) == 85.0
+    bad_cycle1 = score_at("bad", 1)
+    # Either it stayed at 60 (no fallback budget yet) or migrated (and
+    # therefore was recorded under a child pipeline with the bad score),
+    # but in no case should it be 88.0.
+    assert bad_cycle1 != 88.0
+
+
+@pytest.mark.fast
 def test_stage_prediction_renames_boltz_chains(tmp_path):
     """The real stage_prediction_task collapses multi-char Boltz chains
     (``pdz``/``pep``) to single-char PDB chains (``A``/``B``).

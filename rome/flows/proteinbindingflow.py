@@ -430,8 +430,13 @@ class ProteinBindingFlow:
             prediction_root,
             csv_path,
         )
+        # The extractor scans the staging dir and returns one row per
+        # backbone present there; filter to the backbone we're currently
+        # resolving so we don't attribute another structure's scores to
+        # this one. The seq_uid the extractor synthesizes (= backbone_id)
+        # gets replaced with the L1 candidate's real seq_uid.
+        results = [r for r in results if r.backbone_id == backbone_id]
         for r in results:
-            r.backbone_id = backbone_id
             r.seq_uid = seq_uid
         return results
 
