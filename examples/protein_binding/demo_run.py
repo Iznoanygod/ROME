@@ -1,26 +1,16 @@
 """Runnable demo of :class:`ProteinBindingFlow` against print+sleep stand-ins.
 
 Drives the **full** orchestration end-to-end — streaming MPNN generation,
-log-likelihood ranking, structure prediction, staging, extraction, the
+log-likelihood ranking, AF2-multimer prediction, extraction, the
 adaptive criterion (KEEP / FALLBACK / MIGRATE / DROP), corpus
 accumulation, training, weight-version hot reload — without any real
-science tools.  Every hook prints what it's doing and ``await
-asyncio.sleep(...)`` to simulate the duration of the real work it stands
-in for.
+science tools. Every hook prints what it's doing and
+``await asyncio.sleep(...)`` to simulate the duration of the real work
+it stands in for.
 
 Run it with::
 
     python examples/protein_binding/demo_run.py
-
-Output looks like::
-
-    [+0.00s] [BOOT]          backbones=['b_alpha', 'b_beta', 'b_degraded'] cycles=3
-    [+0.00s] [s1 MPNN]       w0 batch for b_alpha cycle=0 v0 (5 seqs)
-    [+0.00s] [s1 MPNN]       w1 batch for b_alpha cycle=0 v0 (5 seqs)
-    [+0.31s] [s4 Boltz]      predict b_alpha (fasta b_alpha.fa)
-    [+0.82s] [s4_post]       stage b_alpha -> best_models / best_ptm + rename chains
-    [+0.88s] [s5 extract]    pid=p_root_... cycle=0
-    ...
 
 The scenario is configured so:
   * two backbones ("b_alpha", "b_beta") improve every cycle (KEEPs),
@@ -30,9 +20,11 @@ The scenario is configured so:
     trainer hook, which bumps ``model_version``; the streaming MPNN
     workers print the hot-reload event between batches.
 
-To wire production tools, swap the hook bodies for what's in
-``rome.protein.tasks`` and run the same flow under a Dragon-backed
-state factory.
+The hook contracts match the IMPRESS main-branch AF2 pipeline:
+``af2_multimer_reduced.sh`` (three-arg) for prediction, no staging step
+(AF2 outputs are extractor-ready), ``plddt_extract_pipeline.py`` for the
+score CSV. Swap the bodies for the production wrappers in
+``rome.protein.tasks`` to run for real.
 """
 
 import asyncio
@@ -159,10 +151,9 @@ def _log(stage: str, msg: str) -> None:
 REGRESS_BID = "b_degraded"
 
 # Per-stage simulated work durations. Tuned so a full run completes in
-# ~15-20 seconds while still feeling like things are happening.
+# ~5-10 seconds while still feeling like things are happening.
 SLEEP_MPNN = 0.30      # one ProteinMPNN batch on GPU
-SLEEP_PREDICT = 0.50   # one Boltz prediction
-SLEEP_STAGE = 0.05     # cp + chain rename
+SLEEP_PREDICT = 0.50   # one AF2-multimer prediction
 SLEEP_EXTRACT = 0.10   # PyRosetta parse
 SLEEP_TRAIN = 1.50     # one fine-tuning round
 
@@ -228,76 +219,57 @@ async def demo_mpnn_loop(config, worker_index, ddict, terminate):
 
 
 # ---------------------------------------------------------------------------
-# s4 — structure prediction
+# AF2 — structure prediction (af2_multimer_reduced.sh three-arg signature)
 # ---------------------------------------------------------------------------
 
-async def demo_predict(config, fasta_path, output_dir):
-    bid = Path(fasta_path).stem
-    _log("[s4 Boltz]", f"predict {bid} (fasta {Path(fasta_path).name})")
+async def demo_predict(config, fasta_dir, fasta_filename, output_dir):
+    seq_uid = fasta_filename.rsplit(".", 1)[0]
+    bid = seq_uid.split("-")[0] if "-" in seq_uid else seq_uid
+    _log("[AF2 predict]", f"predict {bid} (fasta {fasta_filename})")
     await asyncio.sleep(SLEEP_PREDICT)
-    nested = Path(output_dir) / f"boltz_results_{bid}" / "predictions" / bid
-    nested.mkdir(parents=True, exist_ok=True)
-    # Write a Boltz-shaped output tree so the next stage (s4_post_exec) has
-    # something realistic to stage + chain-rename.
-    (nested / f"{bid}_model_0.pdb").write_text(
-        "ATOM      1  CA  ALA pdz   1       0.000   0.000   0.000  1.00 90.00           C\n"
-        "ATOM      2  CA  ALA pep   1       1.000   1.000   1.000  1.00 90.00           C\n"
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Sentinel PDB so the extractor has something at the canonical path.
+    (Path(output_dir) / f"{seq_uid}.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 90.00           C\n"
     )
-    (nested / f"confidence_{bid}_model_0.json").write_text(
-        '{"ptm": 0.85, "iptm": 0.80}\n'
-    )
-    _log("[s4 Boltz]", f"predict {bid} done -> {nested.name}/")
+    _log("[AF2 predict]", f"predict {bid} done -> {Path(output_dir).name}/")
     return output_dir
 
 
 # ---------------------------------------------------------------------------
-# s4_post_exec — stage outputs into canonical paths + rename chains
+# pLDDT/pTM/pAE extraction (plddt_extract_pipeline.py)
 # ---------------------------------------------------------------------------
 
-async def demo_stage(config, predict_out, best_model_dst, best_ptm_dst, bid):
-    _log("[s4_post]", f"stage {bid} -> best_models/ + best_ptm/ (chain rename pdz->A pep->B)")
-    await asyncio.sleep(SLEEP_STAGE)
-    src = Path(predict_out) / f"boltz_results_{bid}" / "predictions" / bid
-    Path(best_model_dst).parent.mkdir(parents=True, exist_ok=True)
-    Path(best_ptm_dst).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src / f"{bid}_model_0.pdb", best_model_dst)
-    shutil.copyfile(src / f"confidence_{bid}_model_0.json", best_ptm_dst)
-    return best_model_dst
+async def demo_extract(config, pipeline_id, cycle, af_output_dir, csv_out):
+    """Synthesize improving scores by default; degrade REGRESS_BID on cycle 1+.
 
-
-# ---------------------------------------------------------------------------
-# s5 — pLDDT/pTM/pAE extraction
-# ---------------------------------------------------------------------------
-
-async def demo_extract(config, pipeline_id, cycle, prediction_root, csv_out):
-    """Synthesize improving scores by default; degrade REGRESS_BID on cycle 1+."""
-    _log("[s5 extract]", f"pid={pipeline_id} cycle={cycle}")
+    AF2 writes one output dir per FASTA, so this dummy returns one row
+    per call — matching the real ``extract_metrics_task`` behavior.
+    """
+    seq_uid = Path(af_output_dir).name
+    bid = seq_uid.split("-")[0] if "-" in seq_uid else seq_uid
+    _log("[extract]", f"pid={pipeline_id} cycle={cycle} bid={bid}")
     await asyncio.sleep(SLEEP_EXTRACT)
-    best_models = Path(prediction_root) / "best_models"
-    results = []
-    for fn in sorted(best_models.glob("*.pdb")):
-        bid = fn.stem
-        if bid == REGRESS_BID and cycle >= 1:
-            plddt, ptm, pae = 72.0, 0.65, 5.5    # degraded → triggers fallback
-        else:
-            plddt = min(92.0, 80.0 + cycle * 3.0)
-            ptm = min(0.95, 0.80 + cycle * 0.04)
-            pae = max(2.5, 4.5 - cycle * 0.5)
-        results.append(
-            PredictionResult(
-                seq_uid=bid,
-                backbone_id=bid,
-                pdb_path=str(fn),
-                pLDDT=plddt,
-                pTM=ptm,
-                pAE=pae,
-            )
+    if bid == REGRESS_BID and cycle >= 1:
+        plddt, ptm, pae = 72.0, 0.65, 5.5    # degraded → triggers fallback
+    else:
+        plddt = min(92.0, 80.0 + cycle * 3.0)
+        ptm = min(0.95, 0.80 + cycle * 0.04)
+        pae = max(2.5, 4.5 - cycle * 0.5)
+    _log(
+        "[extract]",
+        f"  {bid:<12} pLDDT={plddt:5.1f}  pTM={ptm:.2f}  pAE={pae:.2f}",
+    )
+    return [
+        PredictionResult(
+            seq_uid=seq_uid,
+            backbone_id=bid,
+            pdb_path=str(Path(af_output_dir) / f"{seq_uid}.pdb"),
+            pLDDT=plddt,
+            pTM=ptm,
+            pAE=pae,
         )
-        _log(
-            "[s5 extract]",
-            f"  {bid:<12} pLDDT={plddt:5.1f}  pTM={ptm:.2f}  pAE={pae:.2f}",
-        )
-    return results
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +307,8 @@ async def main():
                 backbone_id=bid,
                 pdb_path=str(p),
                 design_chains="A",
-                target_peptide="EGYQDYEPEA",
+                # target_peptide left unset: AF2-multimer in the main-branch
+                # IMPRESS pipeline takes a single-sequence FASTA, not paired.
             )
         )
 
@@ -363,7 +336,8 @@ async def main():
     hooks = TaskHooks(
         mpnn_generator_loop=demo_mpnn_loop,
         predict_structure=demo_predict,
-        stage_prediction=demo_stage,
+        # stage_prediction left unset — defaults to the no-op
+        # pass-through that's right for AF2.
         extract_metrics=demo_extract,
         mpnn_train=demo_train,
     )

@@ -12,11 +12,15 @@ from typing import Any, Dict, List, Optional
 class BackboneSpec:
     """A single input structure plus its design constraints.
 
-    Constraints mirror the flags accepted by IMPRESS's ``mpnn_wrapper.py`` so
-    a backbone can be handed to ProteinMPNN without further translation. The
-    ``target_peptide`` field carries the binding-partner sequence appended to
-    the paired FASTA the structure predictor (Boltz / AF2) consumes — in the
-    IMPRESS PDZ use case this is the C-terminal Alpha-Synuclein peptide.
+    Constraints mirror the flags accepted by IMPRESS's ``mpnn_wrapper.py``
+    so a backbone can be handed to ProteinMPNN without further
+    translation.
+
+    The ``target_peptide`` / chain-name fields are optional: they're
+    consumed only when running a structure predictor that takes a paired
+    FASTA (e.g. Boltz on the ``update_usecase`` branch). The default
+    AF2-multimer pipeline on main writes a single-sequence FASTA from the
+    designed sequence and ignores these fields.
     """
     backbone_id: str
     pdb_path: str
@@ -30,10 +34,7 @@ class BackboneSpec:
     bias_weight: Optional[str] = None
     temp: float = 0.1
     interface: bool = False
-    # Paired-FASTA fields (consumed in s3). The designed sequence is written
-    # under ``>designed_chain_name|<backbone_id>``; the target peptide under
-    # ``>target_chain_name|<backbone_id>``. Boltz/AF2 fold the resulting
-    # dimer. Defaults match the IMPRESS branch layout (pdz + pep).
+    # Optional paired-FASTA fields (only used by non-AF2 predictors).
     target_peptide: Optional[str] = None
     target_chain_name: str = "pep"
     designed_chain_name: str = "pdz"
@@ -58,11 +59,12 @@ class SequenceRecord:
 class PredictionResult:
     """Output of ``predict_structure_task`` + ``extract_metrics_task`` for one sequence.
 
-    Container for the per-cycle structure-prediction metrics — pLDDT from
-    backbone B-factors, iPTM+PTM from the predictor's confidence JSON, and
-    cross-interface PAE. Works for either Boltz or AF2 outputs since the
-    fields are the predictor-agnostic scoring surface IMPRESS's
-    plddt_extract_pipeline.py produces.
+    Container for the per-cycle structure-prediction metrics — mean
+    per-residue pLDDT from backbone B-factors, iPTM+PTM from the
+    predictor's confidence JSON, and cross-interface PAE. Works for
+    AF2-multimer (default) or any drop-in predictor whose extracted
+    metrics conform to the IMPRESS ``plddt_extract_pipeline.py`` CSV
+    schema.
     """
     seq_uid: str
     backbone_id: str
@@ -73,7 +75,7 @@ class PredictionResult:
     raw_csv_row: Optional[str] = None
 
 
-# Back-compat alias for the AF2-era name. Drop once external callers settle.
+# Back-compat alias matching the AF2-era name used in earlier ROME work.
 AF2Result = PredictionResult
 
 

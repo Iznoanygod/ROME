@@ -3,8 +3,12 @@
 Single dataclass split into logical blocks (design / L1 streaming / L2 adaptive /
 training / backends / resources). No ML library imports.
 
-Path defaults track IMPRESS's ``update_usecase/protein_binding`` branch
-(Boltz default, AF2 alternate, scripts under ``scripts/`` subdir).
+Path defaults follow the IMPRESS main-branch ``examples/protien_binding_usecase``
+(AF2-multimer via ``af2_multimer_reduced.sh``, extraction via
+``plddt_extract_pipeline.py``). Helper modules in
+``feature/amarel_notebook/src/original`` (e.g. ``mpnn_af_pipeline.py``,
+``find_binders_af.py``) are the older reference implementation that
+informed the contracts.
 """
 
 from dataclasses import dataclass, field
@@ -26,22 +30,21 @@ class ProteinBindingFlowConfig:
     ll_top_k_per_backbone: int = 4
 
     # ---- L2: adaptive promotion / sub-pipeline spawning ----
-    num_predict_workers: int = 2
+    num_af2_workers: int = 2
     max_cycles: int = 4
     max_fallback_sequences: int = 10
     max_sub_pipelines: int = 3
     # Default adaptive criterion lives in rome.protein.criteria; this is the
-    # plug point. Signature: async (curr: dict[str,float], prev: dict[str,float],
-    # backbone_id: str, cfg) -> Decision (see criteria.py).
+    # plug point. Signature: async (CriterionInput) -> Decision.
     adaptive_criterion: Optional[Callable] = None
 
-    # ---- corpus / training feedback loop ----
+    # ---- corpus / training feedback loop (ROME extension) ----
     train_mpnn: bool = True
     min_pLDDT_for_corpus: float = 80.0
     min_pTM_for_corpus: float = 0.8
     max_pAE_for_corpus: float = 5.0
-    # Trigger a training round when this many new entries have accumulated since
-    # the last fired training task.
+    # Trigger a training round when this many new entries have accumulated
+    # since the last fired training task.
     train_batch_threshold: int = 64
     train_max_concurrent: int = 1
     train_shard_size: int = 256
@@ -54,20 +57,19 @@ class ProteinBindingFlowConfig:
     mpnn_weights_dir: Optional[str] = None       # initial checkpoint
     mpnn_checkpoint_dir: Optional[str] = None    # where trainer writes new versions
 
-    # Structure predictor — shells out to a two-arg script:
-    #   <script> <fasta_path> <output_dir>
-    # Default points at the IMPRESS update-branch Boltz wrapper. Swap to
-    # scripts/s4_alphafold.sh to use the AF2 alternate.
-    predict_script: Optional[str] = None         # e.g. ".../scripts/s4_boltz.sh"
-    predict_cache_dir: Optional[str] = None      # passed as BOLTZ_CACHE env var
+    # AF2 — shells out to ``af2_multimer_reduced.sh`` with the main-branch
+    # three-arg signature: ``<script> <fasta_dir> <fasta_filename> <output_dir>``.
+    af2_script: Optional[str] = None
+    af2_image: Optional[str] = None              # passed as AF2_IMAGE env var
+    af2_db_root: Optional[str] = None            # passed as AF2_DB_ROOT env var
 
-    # Extract — shells out to IMPRESS's s5_plddt_extract.sh-equivalent
-    # with signature: <script> <prediction_root> <iter> <csv_out_path>
+    # Extract — shells out to ``plddt_extract_pipeline.py`` with main-branch
+    # args ``--iteration --name --base --out``.
     extract_script: Optional[str] = None
 
     # ---- resources (RADICAL backend) ----
     gpus_per_mpnn_task: int = 1
-    gpus_per_predict_task: int = 1
+    gpus_per_af2_task: int = 1
     gpus_per_train_task: int = 1
     cpus_per_extract_task: int = 1
 

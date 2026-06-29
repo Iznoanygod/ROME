@@ -1,17 +1,27 @@
-"""Science-tool integration seams (IMPRESS update_usecase/protein_binding layout).
+"""Science-tool integration seams (IMPRESS main branch / AF2 layout).
 
 Each task is a thin shell over an *external* tool — foundry's ProteinMPNN
-engine, Boltz / AlphaFold2 (containerized or venv), IMPRESS's
+engine, AlphaFold2-multimer (containerized), IMPRESS's
 plddt_extract_pipeline.py, and foundry's MPNN trainer. Per the project
 constraint, none of the science code is modified or vendored here; we
 shell out or lazy-import.
 
-The five hook entry points each correspond to an IMPRESS stage:
-  * ``mpnn_generate_loop``       — s1
-  * ``predict_structure_task``   — s4 (Boltz default, AF2 alternate)
-  * ``stage_prediction_task``    — s4_post_exec
-  * ``extract_metrics_task``     — s5
-  * ``mpnn_train_task``          — ROME-only training round
+Task contracts mirror the main-branch IMPRESS scripts (the original
+``af2_multimer_reduced.sh`` and ``plddt_extract_pipeline.py``). The
+``feature/amarel_notebook/src/original`` tree carries earlier versions of
+the same machinery (``mpnn_af_pipeline.py``, ``find_binders_af.py``,
+``jon_job.sh``); those reference implementations informed the contracts
+below but are not invoked directly.
+
+ROME hook mapping:
+  * ``mpnn_generate_loop``        — ProteinMPNN sequence design (s1)
+  * ``predict_structure_task``    — AlphaFold2-multimer prediction
+  * ``stage_prediction_task``     — optional post-predict staging
+                                    (no-op default; only needed when a
+                                    predictor like Boltz emits multi-char
+                                    PDB chains or a nested output tree)
+  * ``extract_metrics_task``      — pLDDT / pTM / pAE extraction
+  * ``mpnn_train_task``           — ROME-only training round
 
 These are pure async functions so they can be wrapped with
 ``asyncflow.function_task`` / ``executable_task`` decorators at orchestrator
@@ -30,7 +40,7 @@ from rome.protein.schema import BackboneSpec, PredictionResult, SequenceRecord
 
 
 # ---------------------------------------------------------------------------
-# s1 — MPNN streaming generation
+# ProteinMPNN streaming generation
 # ---------------------------------------------------------------------------
 
 async def mpnn_generate_loop(
@@ -86,7 +96,6 @@ def _load_mpnn_engine(config: Any, workflow_ddict: Any):
     path = workflow_ddict.get("mpnn_checkpoint_path") or config.mpnn_weights_dir
 
     if config.mpnn_backend == "foundry":
-        # Foundry's MPNN package is API-stabilizing; import lazily.
         from mpnn.inference_engines import MPNNInferenceEngine  # type: ignore
 
         engine = MPNNInferenceEngine.from_pretrained(path)
@@ -135,11 +144,13 @@ def _mpnn_sample_batch(
 ) -> List[Dict[str, Any]]:
     """Run one ProteinMPNN sample call against ``spec`` and return records.
 
-    The contract the engine must satisfy:
+    Engine contract:
       engine.sample(pdb_path, num_seqs, design_chains, fixed_positions, ...)
         -> Iterable[(sequence: str, log_likelihood: float)]
 
-    Both foundry's MPNNInferenceEngine and the legacy shim conform to it.
+    Both foundry's MPNNInferenceEngine and the legacy shim (a thin wrapper
+    over ``dauparas/ProteinMPNN`` — the upstream IMPRESS main branch uses
+    this) conform to it.
     """
     raw = engine.sample(
         pdb_path=spec.pdb_path,
@@ -174,9 +185,10 @@ def _append_mpnn_outputs(workflow_ddict: Any, backbone_id: str, records: list) -
 
 
 class _LegacyMPNNEngine:
-    """Adapter for dauparas/ProteinMPNN-style CLI (what IMPRESS uses).
+    """Adapter for ``dauparas/ProteinMPNN``-style CLI (what IMPRESS uses).
 
-    Not a re-implementation — shells out to the original repo's scripts.
+    Not a re-implementation — shells out to the original repo's scripts via
+    IMPRESS's ``mpnn_wrapper.py``.
     """
 
     def __init__(self, weights_path: str):
@@ -190,129 +202,99 @@ class _LegacyMPNNEngine:
 
 
 # ---------------------------------------------------------------------------
-# s4 — Structure prediction (Boltz default, AF2 alternate)
+# AlphaFold2 multimer prediction
 # ---------------------------------------------------------------------------
 
 async def predict_structure_task(
     config: Any,
-    fasta_path: str,
+    fasta_dir: str,
+    fasta_filename: str,
     output_dir: str,
 ) -> str:
-    """Run the structure predictor on a single paired FASTA.
+    """Run AlphaFold2-multimer on a single FASTA.
 
-    Wraps a script following the IMPRESS update_usecase/protein_binding
-    branch's two-arg signature (``s4_boltz.sh`` / ``s4_alphafold.sh``):
-        <script> <fasta_path> <output_dir>
+    Wraps ``af2_multimer_reduced.sh`` from the IMPRESS main branch, whose
+    three-arg signature is:
+        <script> <fasta_dir> <fasta_filename> <output_dir>
 
-    Boltz caches MSA per fasta-stem in ``boltz_results_<stem>/msa/`` and
-    reuses it across runs — IMPRESS's wrapper deletes the stale MSA dir
-    before each invocation, so ROME doesn't have to.
+    The script binds the AF2 container (Apptainer / Singularity) with
+    ``--nv`` and a set of database paths. Container image + database root
+    are passed through environment variables ``AF2_IMAGE`` /
+    ``AF2_DB_ROOT`` so we don't have to know about them here.
     """
-    if not config.predict_script:
-        raise ValueError("config.predict_script must be set for predict_structure_task")
+    if not config.af2_script:
+        raise ValueError("config.af2_script must be set for predict_structure_task")
     os.makedirs(output_dir, exist_ok=True)
-    cmd = [config.predict_script, fasta_path, output_dir]
+    cmd = [config.af2_script, fasta_dir, fasta_filename, output_dir]
     env = os.environ.copy()
-    if config.predict_cache_dir:
-        env["BOLTZ_CACHE"] = config.predict_cache_dir
+    if config.af2_image:
+        env["AF2_IMAGE"] = config.af2_image
+    if config.af2_db_root:
+        env["AF2_DB_ROOT"] = config.af2_db_root
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError(
-            f"predict_script failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
+            f"af2_script failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
         )
     return output_dir
 
 
 # ---------------------------------------------------------------------------
-# s4_post_exec — Stage predictor outputs into canonical paths + rename chains
+# Optional post-predict staging hook (no-op by default for AF2).
+#
+# AF2 writes ranked PDB outputs directly into the output_dir with the
+# columns the IMPRESS extractor expects, so no staging is needed. Kept
+# as a hook so non-AF2 predictors (e.g. Boltz, which uses multi-char
+# chain IDs and a nested output tree) can re-enable post-processing
+# without touching the orchestrator.
 # ---------------------------------------------------------------------------
 
 async def stage_prediction_task(
     config: Any,
     prediction_output_dir: str,
-    best_model_dst: str,
-    best_ptm_dst: str,
+    target_fasta: str,
     backbone_id: str,
 ) -> str:
-    """Copy best model + confidence JSON; rename multi-char Boltz chains.
+    """Default no-op staging: return the predict output dir untouched.
 
-    Boltz writes outputs under:
-        <prediction_output_dir>/boltz_results_<bid>/predictions/<bid>/
-            <bid>_model_0.pdb
-            confidence_<bid>_model_0.json
-    with multi-char chain IDs taken from the paired-FASTA record names
-    (``pdz`` / ``pep``). Downstream consumers (PyRosetta in s5,
-    ProteinMPNN for the next pass) require single-char PDB chains, so we
-    rename ``pdz`` -> ``A`` and ``pep`` -> ``B`` while staging.
+    Replace via ``TaskHooks.stage_prediction`` when running a predictor
+    that needs file renames, chain rewrites, or output flattening.
     """
-    src_root = os.path.join(
-        prediction_output_dir, f"boltz_results_{backbone_id}",
-        "predictions", backbone_id,
-    )
-    src_pdb = os.path.join(src_root, f"{backbone_id}_model_0.pdb")
-    src_json = os.path.join(src_root, f"confidence_{backbone_id}_model_0.json")
-
-    os.makedirs(os.path.dirname(best_model_dst), exist_ok=True)
-    os.makedirs(os.path.dirname(best_ptm_dst), exist_ok=True)
-
-    _copy_pdb_rename_chains(
-        src_pdb, best_model_dst,
-        rename_map={"pdz": "A", "pep": "B"},
-    )
-    shutil.copyfile(src_json, best_ptm_dst)
-    return best_model_dst
-
-
-def _copy_pdb_rename_chains(src: str, dst: str, rename_map: Dict[str, str]) -> None:
-    """Stream a PDB file, replacing Boltz multi-char chain IDs with single chars.
-
-    Logic mirrors IMPRESS's ``_copy_pdb_rename_chains`` exactly: Boltz writes
-    the FASTA record name (e.g. ``pdz``, ``pep``) into PDB columns 22..24
-    (0-indexed 21..24), overflowing into the resSeq region. The replacement
-    drops a single char at col 21 and re-anchors the rest of the line from
-    col 24 — the resulting line is two chars shorter, matching what
-    downstream PyRosetta / next-pass ProteinMPNN expect.
-    """
-    with open(src) as fin, open(dst, "w") as fout:
-        for line in fin:
-            if line.startswith(("ATOM", "HETATM", "TER")):
-                chain = line[21:24]
-                if chain in rename_map:
-                    line = line[:21] + rename_map[chain] + line[24:]
-            fout.write(line)
+    return prediction_output_dir
 
 
 # ---------------------------------------------------------------------------
-# s5 — Extract pLDDT / pTM / pAE
+# pLDDT / pTM / pAE extraction (IMPRESS main branch)
 # ---------------------------------------------------------------------------
 
 async def extract_metrics_task(
     config: Any,
     pipeline_id: str,
     cycle: int,
-    prediction_root: str,
+    af_output_dir: str,
     csv_out_path: str,
 ) -> List[PredictionResult]:
     """Run IMPRESS's pLDDT/pTM/pAE extractor and parse its CSV.
 
-    Shells out to ``config.extract_script`` (default
-    ``scripts/s5_plddt_extract.sh``) with the IMPRESS update-branch
-    signature:
-        <script> <base_path> <iter> <out_name>
+    Wraps ``plddt_extract_pipeline.py`` from the main branch with its
+    four-arg invocation:
+        python plddt_extract_pipeline.py \
+            --iteration <cycle> --name <pipeline_id> \
+            --base <af_output_dir> --out <csv_out_path>
 
-    ``prediction_root`` is the directory containing ``best_models/`` and
-    ``best_ptm/``; the extract script reads PDBs + JSONs from there.
+    The output CSV columns are: ``ID, avg_plddt, ptm, avg_pae``.
     """
     if not config.extract_script:
         raise ValueError("config.extract_script must be set for extract_metrics_task")
     cmd = [
         config.extract_script,
-        prediction_root,
-        str(cycle),
-        csv_out_path,
+        "--iteration", str(cycle),
+        "--name", pipeline_id,
+        "--base", af_output_dir,
+        "--out", csv_out_path,
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -322,10 +304,10 @@ async def extract_metrics_task(
         raise RuntimeError(
             f"extract_script failed (rc={proc.returncode}): {stderr.decode()[:2000]}"
         )
-    return _parse_extract_csv(csv_out_path, prediction_root)
+    return _parse_extract_csv(csv_out_path, af_output_dir)
 
 
-def _parse_extract_csv(csv_path: str, prediction_root: str) -> List[PredictionResult]:
+def _parse_extract_csv(csv_path: str, af_output_dir: str) -> List[PredictionResult]:
     """Parse the CSV emitted by IMPRESS's extractor: ID, avg_plddt, ptm, avg_pae."""
     results: List[PredictionResult] = []
     with open(csv_path) as fd:
@@ -335,13 +317,14 @@ def _parse_extract_csv(csv_path: str, prediction_root: str) -> List[PredictionRe
             if not row:
                 continue
             ident, plddt, ptm, pae = row[0], row[1], row[2], row[3]
-            seq_uid = ident
+            # ID encodes the backbone in its prefix (matches IMPRESS's
+            # convention of ``<backbone>.<model>`` or just ``<backbone>``).
             backbone_id = ident.split(".")[0]
             results.append(
                 PredictionResult(
-                    seq_uid=seq_uid,
+                    seq_uid=ident,
                     backbone_id=backbone_id,
-                    pdb_path=os.path.join(prediction_root, "best_models", f"{backbone_id}.pdb"),
+                    pdb_path=os.path.join(af_output_dir, f"{ident}.pdb"),
                     pLDDT=float(plddt),
                     pTM=float(ptm),
                     pAE=float(pae),
@@ -374,7 +357,6 @@ async def mpnn_train_task(
     os.makedirs(output_checkpoint_dir, exist_ok=True)
     shard_path = _write_parquet_shard(config, sampled_entries)
 
-    # Lazy import — foundry trainer pulls in lightning fabric + atomworks.
     from mpnn.trainers.mpnn import MPNNTrainer  # type: ignore
 
     trainer = MPNNTrainer(

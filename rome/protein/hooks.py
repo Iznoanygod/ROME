@@ -1,46 +1,43 @@
 """Pluggable task hooks for :class:`ProteinBindingFlow`.
 
 The flow itself only knows how to *orchestrate* — when to call MPNN, when
-to run the structure predictor, when to stage outputs, when to extract
-metrics, when to fire a training round. The actual science calls go
-through these hooks. Production wires up the real implementations from
-:mod:`rome.protein.tasks`; tests pass in dummies.
+to run the structure predictor, when to extract metrics, when to fire a
+training round. The actual science calls go through these hooks.
+Production wires up the real implementations from :mod:`rome.protein.tasks`;
+tests pass in dummies.
 
-Hook contracts
---------------
+Hook contracts (mirroring the IMPRESS main-branch AF2 pipeline)
+---------------------------------------------------------------
 
 ``mpnn_generator_loop(config, worker_index, workflow_ddict, terminate_event)``
     Long-running coroutine. Continuously samples ProteinMPNN under the
     current weights and writes ``SequenceRecord``-shaped dicts into
     ``workflow_ddict["mpnn_outputs"][backbone_id]``. Must respect
     ``terminate_event`` and ``model_version`` for hot weight reload.
-    Mirrors IMPRESS's **s1** stage.
 
-``predict_structure(config, fasta_path, output_dir) -> str``
-    Run the structure predictor (Boltz by default, AF2 alternate) on a
-    single paired FASTA. Returns the prediction output directory.
-    Mirrors IMPRESS's **s4** stage.
+``predict_structure(config, fasta_dir, fasta_filename, output_dir) -> str``
+    Run the structure predictor on a single FASTA. Matches the IMPRESS
+    main-branch ``af2_multimer_reduced.sh`` three-arg signature. Returns
+    the prediction output directory.
 
-``stage_prediction(config, prediction_output_dir, best_model_dst,
-                    best_ptm_dst, backbone_id) -> str``
-    Stage the best model + confidence JSON from the predictor's nested
-    output layout into canonical locations, renaming multi-char Boltz
-    chains (``pdz`` -> ``A``, ``pep`` -> ``B``) so downstream PyRosetta /
-    next-pass MPNN can read them. Returns the staged PDB path.
-    Mirrors IMPRESS's **s4_post_exec** stage.
+``stage_prediction(config, prediction_output_dir, target_fasta, backbone_id) -> str``
+    *Optional.* Post-process the predictor's outputs (file renames, chain
+    rewrites, output flattening). Default = no-op; AF2 writes outputs
+    directly into a form the extractor accepts so no staging is needed.
+    Required when running a non-AF2 predictor (e.g. Boltz, which emits
+    multi-char PDB chain IDs and a nested output tree).
 
-``extract_metrics(config, pipeline_id, cycle, prediction_root, csv_out_path)
+``extract_metrics(config, pipeline_id, cycle, af_output_dir, csv_out_path)
     -> list[PredictionResult]``
-    Parse staged PDB + JSON outputs into score rows. ``prediction_root``
-    is the staging root (parent of ``best_models/`` and ``best_ptm/``).
-    Mirrors IMPRESS's **s5** stage.
+    Parse the predictor's outputs into score rows. Wraps the main-branch
+    ``plddt_extract_pipeline.py``.
 
 ``mpnn_train(config, sampled_entries, output_checkpoint_dir) -> str``
-    Run one training round on a sampled shard of corpus entries.
-    Returns the new checkpoint directory. ROME-specific extension - not
-    part of the IMPRESS pipeline.
+    Run one training round on a sampled shard. Returns the new
+    checkpoint directory. ROME-specific extension — not part of the
+    IMPRESS pipeline.
 
-The flow never imports a concrete tool - all five cross the seam through
+The flow never imports a concrete tool — all five cross the seam through
 ``TaskHooks``.
 """
 
@@ -51,8 +48,11 @@ from rome.protein.schema import PredictionResult
 
 
 MpnnGeneratorLoop = Callable[[Any, int, Any, Any], Awaitable[None]]
-PredictStructure = Callable[[Any, str, str], Awaitable[str]]
-StagePrediction = Callable[[Any, str, str, str, str], Awaitable[str]]
+# (config, fasta_dir, fasta_filename, output_dir) -> output_dir
+PredictStructure = Callable[[Any, str, str, str], Awaitable[str]]
+# (config, prediction_output_dir, target_fasta, backbone_id) -> staged_dir
+StagePrediction = Callable[[Any, str, str, str], Awaitable[str]]
+# (config, pipeline_id, cycle, af_output_dir, csv_out_path) -> list[PredictionResult]
 ExtractMetrics = Callable[[Any, str, int, str, str], Awaitable[List[PredictionResult]]]
 # Trainer receives already-sampled corpus entries (list of dicts) so dummies
 # don't need to read/write parquet. The real implementation materializes the

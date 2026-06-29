@@ -1,9 +1,19 @@
-"""Per-structure pipeline state.
+"""Per-structure pipeline state (IMPRESS main branch layout).
 
-Mirrors IMPRESS's ``ProteinBindingPipeline``: tracks the set of backbones a
-pipeline currently owns, the current/previous AF2 score frontier, the
-fallback queue, and the sandbox layout. Sub-pipelines are vanilla instances
-of this class with ``is_child=True`` and a copied subset of ``iter_seqs``.
+Mirrors IMPRESS's ``ProteinBindingPipeline``: tracks the set of backbones
+a pipeline currently owns, the current/previous AF2 score frontier, the
+fallback queue, and the sandbox layout. Sub-pipelines are vanilla
+instances of this class with ``is_child=True`` and a copied subset of
+``iter_seqs``.
+
+Directory layout follows the main-branch
+``examples/protien_binding_usecase`` layout (flat) rather than the
+``update_usecase/protein_binding`` Boltz layout (deeply nested):
+
+    <base_path>/
+      <pipeline_id>_in/       input PDBs (pass 1)
+      <pipeline_id>_mpnn/     MPNN FASTA outputs (one dir per pass)
+      <pipeline_id>_af/       AF2 prediction outputs + per-pass score CSVs
 """
 
 import os
@@ -33,64 +43,39 @@ class ProteinBindingPipeline:
     iter_seqs: Dict[str, BackboneSpec] = field(default_factory=dict)
     kill_parent: bool = False
 
-    # Sandbox subdirectories (lazy, created on first use). Layout mirrors the
-    # IMPRESS update_usecase/protein_binding branch:
-    #
-    #   <base_path>/
-    #     <pipeline_id>_in/                         input PDBs (pass 1)
-    #     af_pipeline_outputs_multi/<pipeline_id>/
-    #       mpnn/job_<pass>/seqs/                   MPNN FASTA per pass
-    #       af/fasta/                               paired FASTAs (designed + peptide)
-    #       af/prediction/dimer_models/<bid>/       full Boltz/AF2 outputs
-    #       af/prediction/best_models/<bid>.pdb     staged best model
-    #       af/prediction/best_ptm/<bid>.json       iPTM+PTM confidence
-    #     af_stats_<pipeline_id>_pass_<N>.csv       per-pass extract CSV
+    # ------------------------------------------------------------------
+    # sandbox layout
+    # ------------------------------------------------------------------
     @property
     def input_path(self) -> str:
         return os.path.join(self.base_path, f"{self.pipeline_id}_in")
 
     @property
-    def outputs_root(self) -> str:
-        return os.path.join(
-            self.base_path, "af_pipeline_outputs_multi", self.pipeline_id
-        )
-
-    def mpnn_out_path(self, cycle: Optional[int] = None) -> str:
-        """Per-pass MPNN output directory: ``mpnn/job_<pass>/seqs/``."""
-        c = self.passes if cycle is None else cycle
-        return os.path.join(self.outputs_root, "mpnn", f"job_{c + 1}", "seqs")
+    def mpnn_out_path(self) -> str:
+        return os.path.join(self.base_path, f"{self.pipeline_id}_mpnn")
 
     @property
-    def fasta_path(self) -> str:
-        return os.path.join(self.outputs_root, "af", "fasta")
-
-    @property
-    def dimer_models_path(self) -> str:
-        return os.path.join(self.outputs_root, "af", "prediction", "dimer_models")
-
-    @property
-    def best_models_path(self) -> str:
-        return os.path.join(self.outputs_root, "af", "prediction", "best_models")
-
-    @property
-    def best_ptm_path(self) -> str:
-        return os.path.join(self.outputs_root, "af", "prediction", "best_ptm")
+    def af_out_path(self) -> str:
+        return os.path.join(self.base_path, f"{self.pipeline_id}_af")
 
     def set_up_dirs(self) -> None:
-        for p in (
-            self.input_path,
-            self.fasta_path,
-            self.dimer_models_path,
-            self.best_models_path,
-            self.best_ptm_path,
-        ):
+        for p in (self.input_path, self.mpnn_out_path, self.af_out_path):
             os.makedirs(p, exist_ok=True)
 
     def stats_csv(self, cycle: Optional[int] = None) -> str:
+        """Per-pass score CSV.
+
+        Matches IMPRESS's adaptive_decision which reads
+        ``af_stats_<pipeline_name>_pass_<pass>.csv``.
+        """
         c = self.passes if cycle is None else cycle
         return os.path.join(
-            self.base_path, f"af_stats_{self.pipeline_id}_pass_{c}.csv"
+            self.af_out_path, f"af_stats_{self.pipeline_id}_pass_{c}.csv"
         )
+
+    # ------------------------------------------------------------------
+    # adaptive sub-pipeline helpers
+    # ------------------------------------------------------------------
 
     def migrate_backbones(self, backbone_ids: List[str]) -> Dict[str, BackboneSpec]:
         """Pop a subset of backbones from this pipeline's working set.
@@ -106,27 +91,22 @@ class ProteinBindingPipeline:
         return moved
 
     def copy_pdbs_into(self, child_input_dir: str, backbone_ids: List[str]) -> None:
-        """Copy the latest best-model PDBs for the given backbones into a child's input dir.
+        """Copy the latest AF-predicted PDBs into a child's input dir.
 
-        IMPRESS uses the post-staged best model from
-        ``af/prediction/best_models/<bid>.pdb`` (multi-char Boltz chains
-        already renamed to A/B by s4_post_exec) as the next pass's MPNN
-        input. We mirror that convention.
+        IMPRESS uses the best AF2 model as the next backbone. We mirror
+        that: ``<af_out_path>/<backbone_id>.pdb`` is the convention the
+        extractor writes for the highest-ranked prediction this cycle.
         """
         os.makedirs(child_input_dir, exist_ok=True)
         for bid in backbone_ids:
-            src = os.path.join(self.best_models_path, f"{bid}.pdb")
+            src = os.path.join(self.af_out_path, f"{bid}.pdb")
             if not os.path.exists(src):
                 continue
             dst = os.path.join(child_input_dir, f"{bid}.pdb")
             shutil.copyfile(src, dst)
 
     def to_state(self) -> Dict[str, Any]:
-        """Serialize to a plain dict for the workflow ddict.
-
-        BackboneSpec is itself a dataclass; we keep it as the original object
-        because Dragon DDict ferries Python objects, not just JSON.
-        """
+        """Serialize to a plain dict for the workflow ddict."""
         return {
             "pipeline_id": self.pipeline_id,
             "base_path": self.base_path,

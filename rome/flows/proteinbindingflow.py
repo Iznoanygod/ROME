@@ -384,86 +384,91 @@ class ProteinBindingFlow:
         backbone_id: str,
         record: dict,
     ) -> List[PredictionResult]:
-        """Run s3 -> s4 -> s4_post_exec -> s5 for a single L1 candidate.
+        """Predict -> (optional stage) -> extract for a single L1 candidate.
 
-        Mirrors the IMPRESS update_usecase/protein_binding stage ordering:
-        write the paired FASTA, predict the dimer structure, stage the
-        best model + confidence JSON into canonical paths (renaming
-        multi-char Boltz chains), then run the extractor.
+        Matches the IMPRESS main-branch pipeline: write the designed
+        sequence into a FASTA, hand the (fasta_dir, fasta_filename,
+        output_dir) triple to ``af2_multimer_reduced.sh``, then call the
+        extractor against the AF2 output dir. ``stage_prediction`` is a
+        no-op by default; non-AF2 predictors override it.
+
+        When ``spec.target_peptide`` is set (Boltz / paired-FASTA
+        predictors), a second record is written for the peptide chain;
+        AF2's own input format also supports this so the same code path
+        handles both.
         """
         seq_uid = record["seq_uid"]
         spec: BackboneSpec = pipeline.iter_seqs[backbone_id]
 
-        # s3 — paired FASTA (designed sequence + target peptide).
-        os.makedirs(pipeline.fasta_path, exist_ok=True)
-        fasta_path = os.path.join(pipeline.fasta_path, f"{backbone_id}.fa")
-        self._write_paired_fasta(fasta_path, backbone_id, record["sequence"], spec)
+        # 1. Materialize the FASTA the predictor expects.
+        os.makedirs(pipeline.mpnn_out_path, exist_ok=True)
+        fasta_filename = f"{seq_uid}.fasta"
+        fasta_path = os.path.join(pipeline.mpnn_out_path, fasta_filename)
+        self._write_fasta(fasta_path, backbone_id, record["sequence"], spec)
 
-        # s4 — structure prediction (GPU). Output dir is per-backbone; the
-        # nested boltz_results_<bid>/predictions/<bid>/ layout is the
-        # predictor's, not ours.
-        predict_out_dir = os.path.join(pipeline.dimer_models_path, backbone_id)
+        # 2. Structure prediction. AF2's af2_multimer_reduced.sh takes
+        #    (fasta_dir, fasta_filename, output_dir).
+        predict_out_dir = os.path.join(pipeline.af_out_path, seq_uid)
         await self.hooks.predict_structure(
-            self.config, fasta_path, predict_out_dir
+            self.config, pipeline.mpnn_out_path, fasta_filename, predict_out_dir
         )
 
-        # s4_post_exec — stage best model + confidence JSON; rename chains.
-        best_model_dst = os.path.join(pipeline.best_models_path, f"{backbone_id}.pdb")
-        best_ptm_dst = os.path.join(pipeline.best_ptm_path, f"{backbone_id}.json")
-        await self.hooks.stage_prediction(
-            self.config,
-            predict_out_dir,
-            best_model_dst,
-            best_ptm_dst,
-            backbone_id,
+        # 3. Optional post-predict staging (no-op for AF2; non-trivial
+        #    for predictors like Boltz that need chain renames).
+        staged_dir = await self.hooks.stage_prediction(
+            self.config, predict_out_dir, fasta_filename, backbone_id
         )
 
-        # s5 — pLDDT/pTM/pAE extraction. The extractor reads from
-        # ``<prediction_root>/best_models`` and ``<prediction_root>/best_ptm``
-        # (parent of the two staging dirs).
-        prediction_root = os.path.dirname(pipeline.best_models_path)
+        # 4. Extract pLDDT/pTM/pAE — IMPRESS's plddt_extract_pipeline.py
+        #    walks the predictor's output dir and emits one CSV row per
+        #    model.
         csv_path = pipeline.stats_csv(cycle=pipeline.passes)
         results = await self.hooks.extract_metrics(
             self.config,
             pipeline.pipeline_id,
             pipeline.passes,
-            prediction_root,
+            staged_dir,
             csv_path,
         )
-        # The extractor scans the staging dir and returns one row per
-        # backbone present there; filter to the backbone we're currently
-        # resolving so we don't attribute another structure's scores to
-        # this one. The seq_uid the extractor synthesizes (= backbone_id)
-        # gets replaced with the L1 candidate's real seq_uid.
-        results = [r for r in results if r.backbone_id == backbone_id]
+        # Tag the current backbone/seq_uid onto every returned row —
+        # AF2 emits rows keyed by file ID, not by our backbone_id.
         for r in results:
+            r.backbone_id = backbone_id
             r.seq_uid = seq_uid
         return results
 
     @staticmethod
-    def _write_paired_fasta(
+    def _write_fasta(
         fasta_path: str,
         backbone_id: str,
         designed_sequence: str,
         spec: BackboneSpec,
     ) -> None:
-        """Write the paired FASTA the structure predictor consumes.
+        """Write the FASTA the structure predictor consumes.
 
-        Layout matches IMPRESS's s3 stage:
+        Default (AF2-multimer / single sequence) layout::
+
+            ><backbone_id>|<seq_uid>
+            <designed_sequence>
+
+        When ``spec.target_peptide`` is set (paired-FASTA predictors
+        like Boltz on the update_usecase branch), an additional record
+        for the peptide chain is appended::
+
             >designed_chain_name|<backbone_id>
             <designed_sequence>
             >target_chain_name|<backbone_id>
             <target_peptide>
-
-        When ``spec.target_peptide`` is None (monomer mode) only the
-        designed record is written.
         """
         with open(fasta_path, "w") as fd:
-            fd.write(f">{spec.designed_chain_name}|{backbone_id}\n")
-            fd.write(designed_sequence + "\n")
             if spec.target_peptide:
+                fd.write(f">{spec.designed_chain_name}|{backbone_id}\n")
+                fd.write(designed_sequence + "\n")
                 fd.write(f">{spec.target_chain_name}|{backbone_id}\n")
                 fd.write(spec.target_peptide + "\n")
+            else:
+                fd.write(f">{backbone_id}|{os.path.basename(fasta_path)}\n")
+                fd.write(designed_sequence + "\n")
 
     def _record_cycle(
         self,
