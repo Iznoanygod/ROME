@@ -1,101 +1,136 @@
-"""Entrypoint mirroring IMPRESS's main-branch ``run_protein_binding.py``.
+"""IMPRESS protein-binding workflow with ROME attached as a shim.
 
-Streaming MPNN + adaptive AF2-multimer + continuous MPNN training. Paths
-to the science tools (foundry MPNN weights, IMPRESS's
-``af2_multimer_reduced.sh``, ``plddt_extract_pipeline.py``) come in via
-``ProteinBindingFlowConfig``; ROME does not modify or vendor those tools.
+This is the ``examples/protien_binding_usecase/run_protein_binding.py``
+from the IMPRESS main branch, with three lines added to bring ROME's
+corpus + continuous MPNN fine-tuning along for the ride. Nothing else
+about the IMPRESS pipeline (``ProteinBindingPipeline``,
+``ImpressManager``, the s1..s5 stages) changes.
 
-Reference implementations:
-  * ``examples/protien_binding_usecase`` on IMPRESS ``main`` —
-    AF2-multimer wrapper, MPNN wrapper, pLDDT extractor.
-  * ``src/original`` on IMPRESS ``feature/amarel_notebook`` — older
-    drivers (``mpnn_af_pipeline.py``, ``find_binders_af.py``,
-    ``jon_job.sh``) that informed the original adaptive loop.
-
-Drop input PDBs under ``./structures/`` (or override ``structures=``
-below) and run on a node with GPUs that match the resource block at the
-top.
+The three additions are marked ``# ROME +``.
 """
 
+import copy
+import shutil
 import asyncio
-import os
-from pathlib import Path
+from typing import Any, Dict, Optional
 
 from radical.asyncflow import RadicalExecutionBackend  # type: ignore
 
-from rome.flows.proteinbindingflow import ProteinBindingFlow
-from rome.protein import BackboneSpec, ProteinBindingFlowConfig
+from impress import PipelineSetup, ImpressManager                       # type: ignore
+from impress.pipelines.protein_binding import ProteinBindingPipeline    # type: ignore
+
+# ROME + ------------------------------------------------------------------
+from rome.impress import CorpusThresholds, RomeShim
+# -------------------------------------------------------------------------
 
 
-HERE = Path(__file__).parent
-STRUCTURES_DIR = HERE / "structures"
+async def adaptive_criteria(current_score: float, previous_score: float) -> bool:
+    """Returns True iff quality has degraded (the IMPRESS-paper convention
+    that a 'higher' score is worse, e.g. inter-chain pAE)."""
+    return current_score > previous_score
 
 
-def _discover_backbones() -> list[BackboneSpec]:
-    """Pick up every .pdb under ./structures/ as a backbone."""
-    specs = []
-    for p in sorted(STRUCTURES_DIR.glob("*.pdb")):
-        specs.append(
-            BackboneSpec(
-                backbone_id=p.stem,
-                pdb_path=str(p),
-                # Match the IMPRESS PDZ design problem: redesign chain A
-                # (receptor), leave the peptide chain alone. The AF2-multimer
-                # wrapper accepts a single-sequence FASTA per backbone.
-                design_chains="A",
-            )
-        )
-    return specs
+async def adaptive_decision(pipeline: ProteinBindingPipeline) -> Optional[Dict[str, Any]]:
+    """Original IMPRESS adaptive_decision, verbatim from the main branch.
+
+    Reads the per-pass CSV, identifies regressed proteins, spawns a child
+    pipeline (capped at MAX_SUB_PIPELINES).
+    """
+    MAX_SUB_PIPELINES: int = 3
+    sub_iter_seqs: Dict[str, str] = {}
+
+    file_name = f"af_stats_{pipeline.name}_pass_{pipeline.passes}.csv"
+    with open(file_name) as fd:
+        for line in fd.readlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            name, *_, score_str = line.split(",")
+            protein = name.split(".")[0]
+            pipeline.current_scores[protein] = float(score_str)
+
+    if not pipeline.previous_scores:
+        pipeline.logger.pipeline_log("Saving current scores as previous and returning")
+        pipeline.previous_scores = copy.deepcopy(pipeline.current_scores)
+        return
+
+    sub_iter_seqs = {}
+    for protein, curr_score in pipeline.current_scores.items():
+        if protein not in pipeline.iter_seqs:
+            continue
+        if await adaptive_criteria(curr_score, pipeline.previous_scores[protein]):
+            sub_iter_seqs[protein] = pipeline.iter_seqs.pop(protein)
+
+    if sub_iter_seqs and pipeline.sub_order < MAX_SUB_PIPELINES:
+        new_name = f"{pipeline.name}_sub{pipeline.sub_order + 1}"
+        pipeline.set_up_new_pipeline_dirs(new_name)
+        for protein in sub_iter_seqs:
+            src = f"{pipeline.output_path_af}/{protein}.pdb"
+            dst = f"{pipeline.base_path}/{new_name}_in/{protein}.pdb"
+            shutil.copyfile(src, dst)
+
+        new_config = {
+            "name": new_name,
+            "type": type(pipeline),
+            "adaptive_fn": adaptive_decision,
+            "config": {
+                "is_child": True,
+                "start_pass": pipeline.passes,
+                "passes": pipeline.passes,
+                "iter_seqs": sub_iter_seqs,
+                "seq_rank": pipeline.seq_rank + 1,
+                "sub_order": pipeline.sub_order + 1,
+                "previous_scores": copy.deepcopy(pipeline.previous_scores),
+            },
+        }
+        pipeline.submit_child_pipeline_request(new_config)
+        pipeline.finalize(sub_iter_seqs)
+        if not pipeline.fasta_list_2:
+            pipeline.kill_parent = True
+    else:
+        pipeline.previous_scores = copy.deepcopy(pipeline.current_scores)
 
 
-async def main() -> None:
+async def impress_protein_bind() -> None:
     backend = await RadicalExecutionBackend(
         {
-            "gpus": int(os.environ.get("ROME_GPUS", 4)),
-            "cores": int(os.environ.get("ROME_CORES", 32)),
-            "runtime": int(os.environ.get("ROME_RUNTIME_MIN", 23 * 60)),
-            "resource": os.environ.get("ROME_RESOURCE", "purdue.anvil_gpu"),
+            "gpus": 1,
+            "cores": 32,
+            "runtime": 23 * 60,
+            "resource": "purdue.anvil_gpu",
         }
     )
 
-    config = ProteinBindingFlowConfig(
-        structures=_discover_backbones(),
-        # L1 — streaming generators
-        num_mpnn_generators=2,
-        mpnn_batch_size=4,
-        seqs_per_mpnn_call=10,
-        max_buffer_per_backbone=64,
-        ll_top_k_per_backbone=4,
-        # L2 — adaptive cycles
-        num_af2_workers=2,
-        max_cycles=4,
-        max_fallback_sequences=10,
-        max_sub_pipelines=3,
-        # Training (continuous, ROME extension)
-        train_mpnn=True,
-        min_pLDDT_for_corpus=80.0,
-        min_pTM_for_corpus=0.8,
-        max_pAE_for_corpus=5.0,
+    manager = ImpressManager(execution_backend=backend)
+
+    # ROME + ----------------------------------------------------------------
+    # Score-gated corpus + continuous MPNN fine-tuning. Hooked into IMPRESS
+    # by wrapping the adaptive_fn and entering shim.attached(manager) for
+    # the duration of the run. No other IMPRESS code changes.
+    shim = RomeShim(
+        corpus_thresholds=CorpusThresholds(
+            min_pLDDT=80.0, min_pTM=0.80, max_pAE=5.0,
+        ),
         train_batch_threshold=64,
         train_shard_size=256,
-        train_sampling="uniform",
-        # Backends — point these at your local installs
-        mpnn_backend="foundry",
-        mpnn_weights_dir=os.environ.get("MPNN_WEIGHTS_DIR"),
-        mpnn_checkpoint_dir=os.environ.get("MPNN_CKPT_DIR"),
-        # AF2 (IMPRESS main-branch wrapper).
-        af2_script=os.environ.get("AF2_SCRIPT"),
-        af2_image=os.environ.get("AF2_IMAGE"),
-        af2_db_root=os.environ.get("AF2_DB_ROOT"),
-        # IMPRESS main-branch pLDDT extractor.
-        extract_script=os.environ.get("EXTRACT_SCRIPT"),
-        base_path=os.environ.get("ROME_BASE_PATH", "./protein_binding_run"),
+        mpnn_checkpoint_dir="./mpnn_ckpts",
     )
+    # -----------------------------------------------------------------------
 
-    flow = ProteinBindingFlow(config=config, asyncflow=backend)
-    await flow.launch()
-    await backend.shutdown()
+    pipeline_setups = [
+        PipelineSetup(
+            name="p1",
+            type=ProteinBindingPipeline,
+            adaptive_fn=shim.wrap_adaptive_fn(adaptive_decision),   # ROME +
+        )
+    ]
+
+    async with shim.attached(manager) as rome:                       # ROME +
+        await manager.start(pipeline_setups=pipeline_setups)
+        print(f"ROME: corpus={rome.corpus_size}, training rounds={rome.training_rounds}")
+
+    await manager.flow.shutdown()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(impress_protein_bind())
