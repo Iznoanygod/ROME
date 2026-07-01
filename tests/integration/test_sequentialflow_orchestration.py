@@ -105,8 +105,15 @@ def test_generation_gather_does_not_overwrite_existing():
 
 
 def test_scorer_schedule_fans_out_to_every_reward_func():
+    # Only @Workflow.reward_task-marked funcs run as scorer tasks; the
+    # flow's scheduler filters by the marker.
+    from rome.workflow import Workflow
+
+    @Workflow.reward_task
     def reward_a(*a, **kw):
         return [0.0]
+
+    @Workflow.reward_task
     def reward_b(*a, **kw):
         return [0.0]
 
@@ -134,7 +141,49 @@ def test_scorer_schedule_fans_out_to_every_reward_func():
         assert set(merged) == {"r1", "r2"}
 
 
+def test_seed_state_populates_every_key_the_coroutines_read():
+    """launch() must seed the ddict before starting scheduler/gatherer
+    coroutines — otherwise their first read KeyErrors on a fresh DDict.
+
+    This test extracts the seeding step (``_seed_state``) so we can
+    assert on it without booting the full RL loop.
+    """
+    from rome.workflow import Workflow
+
+    @Workflow.reward_task
+    def reward_a(*a, **kw):
+        return [0.0]
+
+    def reward_local(*a, **kw):  # NOT a reward_task; runs inline in trainer
+        return [0.0]
+
+    flow = _make_flow(
+        reward_funcs=[reward_a, reward_local],
+        num_generators=3, num_scorers=2,
+    )
+    ddict = {}
+    flow._seed_state(ddict)
+
+    # Cross-cutting slots
+    assert ddict["generation_requests"] == {}
+    assert ddict["generator_outputs"] == {}
+    # Per-generator queues
+    for i in range(3):
+        assert ddict[f"generator_{i}_input"] == {}
+        assert ddict[f"generator_{i}_output"] == {}
+    # Per-scorer queues — only for the @reward_task-marked function
+    assert ddict["reward_reward_a_outputs"] == {}
+    for i in range(2):
+        assert ddict[f"reward_reward_a_{i}_input"] == {}
+        assert ddict[f"reward_reward_a_{i}_output"] == {}
+    # The inline reward func has NO seeded slots — no scorer runs for it
+    assert "reward_reward_local_outputs" not in ddict
+
+
 def test_scorer_gather_aggregates_per_scorer_outputs():
+    from rome.workflow import Workflow
+
+    @Workflow.reward_task
     def reward_a(*a, **kw):
         return [0.0]
 
