@@ -104,7 +104,7 @@ def _stub_if_missing() -> None:
         native.event = event
 
     try:
-        import rose 
+        import rose
     except ImportError:
         _ensure_module("rose")
         metrics = _ensure_module("rose.metrics")
@@ -115,6 +115,12 @@ def _stub_if_missing() -> None:
             (),
             {"__init__": lambda self, asyncflow=None: None},
         )
+
+    try:
+        import datasets
+    except ImportError:
+        m = _ensure_module("datasets")
+        m.Dataset = type("Dataset", (), {})
 
 
 _stub_if_missing()

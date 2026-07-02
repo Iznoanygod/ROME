@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
-from peft import LoraConfig
-from transformers import GenerationConfig
+from typing import TYPE_CHECKING, Any, List, Optional
+
+if TYPE_CHECKING:
+    from peft import LoraConfig
+    from transformers import GenerationConfig
 @dataclass
 class ModelConfig:
     """Model configurations used for loading the model and tokenizer, as well as generation.
