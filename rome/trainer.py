@@ -1,46 +1,43 @@
-from typing import Any, Callable, Dict, List, Optional
-from rome.config import ModelConfig
-from datasets import Dataset
+from typing import Callable
+from enum import Enum
+
+class TrainerStatus(Enum):
+    """Enum class for managing the status of training tasks in the ROME framework."""
+    NOT_STARTED = 0
+    STARTING = 1
+    RUNNING = 2
+    STOPPING = 3
+    STOPPED = 4
+    NOT_ENOUGH_DATA = 5
+    TRAINING_COMPLETE = 6
+
 class Trainer:
-    """Abstract base class for ROME training algorithms.
-    
-    Parameters
-    ----------
-    gpus_per_node : int
-        GPUs per node.
-    seed : int
-        Random seed forwarded to the underlying TRL trainer.
-    reward_funcs : List[Callable]
-        List of reward functions to use for training.
-        Reward functions run inside the trainer unless marked with the @Workflow.reward_task decorator,
-        in which case they are expected to be launched as tasks by the workflow
-    """
-    def __init__(
-        self,
-        *,
-        gpus: int = 1,
-        reward_funcs: List[Callable],
-    ) -> None:
-        self._gpus = gpus
-        self._reward_funcs = reward_funcs or []
+    """Training manager in the ROME framework."""
+    def __init__(self, manager: 'Manager'):
+        self.manager = manager
+        self.status = TrainerStatus.NOT_STARTED
+        self.trainer_ddict = DDict()
+        self.stop_event = Event()
+        self.listener_fut = None
 
-    @property
-    def reward_funcs(self) -> List[Callable]:
-        return self._reward_funcs
-
-
-    def train(self, model_config: ModelConfig, dataset: Dataset, **kwargs):
-        """Execute training for the mode.
-
-        Uses model_config for loading the model and tokenizer, as well as generation
-        parameters. reward_funcs are passed to the model trainer to run on the trainer task
-        unless marked with the @Workflow.reward_task decorator, in which case the workflow
-        is responsible for launching them as tasks and passing the results back to the trainer.
+    def start(self, ):
+        """Start the ROME training manager."""
+        self.status = STARTING
         
-        Parameters
-        ----------
-        model_config : ModelConfig
-            Model configuration for the model and tokenizer
-        """
-        raise NotImplementedError("Trainer.train() must be implemented by subclasses.")
+        async def trainer_listener():
+            #set status
+            while not self.stop_event.is_set():
+                self.training_func()
+                
+        
+        listener_fut = trainer_listener()
+        
+        
+        
 
+    def stop(self):
+        """Stop the ROME training manager."""
+        self.stop_event.set()
+
+    def status(self):
+        return self.status
