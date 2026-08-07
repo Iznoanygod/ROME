@@ -6,7 +6,7 @@ import subprocess
 import uuid
 from typing import Any, Dict, List, Optional
 
-from rome.protein.schema import BackboneSpec, PredictionResult, SequenceRecord
+from oldrome.protein.schema import BackboneSpec, PredictionResult, SequenceRecord
 
 
 # ---------------------------------------------------------------------------

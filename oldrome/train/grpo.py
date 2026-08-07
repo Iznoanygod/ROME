@@ -7,9 +7,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from trl import GRPOConfig, GRPOTrainer
 
-from rome.config import ModelConfig
-from rome.trainer import Trainer
-from rome.utils import bump_weight_version, load_model, save_model
+from oldrome.config import ModelConfig
+from oldrome.trainer import Trainer
+from oldrome.utils import bump_weight_version, load_model, save_model
 from datasets import Dataset
 
 from dragon.data.ddict import DDict

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Optional
 
-from rome.protein.schema import PredictionResult
+from oldrome.protein.schema import PredictionResult
 
 
 MpnnGeneratorLoop = Callable[[Any, int, Any, Any], Awaitable[None]]
@@ -27,7 +27,7 @@ class TaskHooks:
 
     def resolved(self) -> "TaskHooks":
         """Fill any unset hook with the production default from tasks.py."""
-        from rome.protein import tasks  # local import to avoid cycles
+        from oldrome.protein import tasks  # local import to avoid cycles
 
         return TaskHooks(
             mpnn_generator_loop=self.mpnn_generator_loop or tasks.mpnn_generate_loop,

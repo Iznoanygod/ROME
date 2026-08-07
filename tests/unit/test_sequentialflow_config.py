@@ -1,4 +1,4 @@
-from rome.flows.sequentialflow import SequentialFlowConfig
+from oldrome.flows.sequentialflow import SequentialFlowConfig
 
 
 def test_defaults():
