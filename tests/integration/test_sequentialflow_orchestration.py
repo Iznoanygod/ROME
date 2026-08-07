@@ -10,9 +10,9 @@ import asyncio
 
 import pytest
 
-from rome.config import ModelConfig
-from rome.flows.sequentialflow import SequentialFlow, SequentialFlowConfig
-from rome.trainer import Trainer
+from oldrome.config import ModelConfig
+from oldrome.flows.sequentialflow import SequentialFlow, SequentialFlowConfig
+from oldrome.trainer import Trainer
 
 
 class OneShotEvent:

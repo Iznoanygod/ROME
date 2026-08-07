@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from rome.workflow import Workflow
+from oldrome.workflow import Workflow
 
 
 def test_workflow_constructor_stores_attrs():

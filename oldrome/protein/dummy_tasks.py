@@ -5,8 +5,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
-from rome.protein.hooks import TaskHooks
-from rome.protein.schema import PredictionResult, SequenceRecord
+from oldrome.protein.hooks import TaskHooks
+from oldrome.protein.schema import PredictionResult, SequenceRecord
 
 
 # ---------------------------------------------------------------------------

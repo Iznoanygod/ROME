@@ -2,8 +2,8 @@ from typing import Any, Callable
 
 from radical.asyncflow import WorkflowEngine
 
-from rome.config import ModelConfig
-from rome.trainer import Trainer
+from oldrome.config import ModelConfig
+from oldrome.trainer import Trainer
 
 class Workflow():
     """Abstract base class for ROME flows.

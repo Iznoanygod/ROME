@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any, Callable, Optional
 
-from rome.workflow import Workflow
+from oldrome.workflow import Workflow
 from rose.metrics import GREATER_THAN_THRESHOLD
 
 import torch
@@ -12,10 +12,10 @@ from rose.metrics import GREATER_THAN_THRESHOLD
 from dragon.data.ddict import DDict
 from dragon.native.event import Event
 
-from rome.config import ModelConfig
-from rome.trainer import Trainer
-from rome.utils import load_model, read_weight_version, reload_model
-from rome.workflow import Workflow
+from oldrome.config import ModelConfig
+from oldrome.trainer import Trainer
+from oldrome.utils import load_model, read_weight_version, reload_model
+from oldrome.workflow import Workflow
 
 class SequentialFlowConfig():
     """Configuration for SequentialFlow.

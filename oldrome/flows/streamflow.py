@@ -14,10 +14,10 @@ except ImportError:
 from dragon.data.ddict import DDict
 from dragon.native.event import Event
 
-from rome.config import ModelConfig
-from rome.trainer import Trainer
-from rome.utils import load_model, reload_lora
-from rome.workflow import Workflow
+from oldrome.config import ModelConfig
+from oldrome.trainer import Trainer
+from oldrome.utils import load_model, reload_lora
+from oldrome.workflow import Workflow
 
 class _WeightSyncCallback(_TrainerCallback):
     """Persist the LoRA adapter and bump ``model_version`` after each step.

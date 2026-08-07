@@ -28,19 +28,19 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional
 
-from rome.protein.config import ProteinBindingFlowConfig
-from rome.protein.coordinator import AdaptiveCoordinator
-from rome.protein.corpus import CorpusCurator
-from rome.protein.criteria import (
+from oldrome.protein.config import ProteinBindingFlowConfig
+from oldrome.protein.coordinator import AdaptiveCoordinator
+from oldrome.protein.corpus import CorpusCurator
+from oldrome.protein.criteria import (
     AdaptiveCriterion,
     CriterionInput,
     Decision,
     default_criterion,
 )
-from rome.protein.hooks import TaskHooks
-from rome.protein.pipeline import ProteinBindingPipeline
-from rome.protein.ranker import LogLikelihoodRanker
-from rome.protein.schema import AF2Result, BackboneSpec
+from oldrome.protein.hooks import TaskHooks
+from oldrome.protein.pipeline import ProteinBindingPipeline
+from oldrome.protein.ranker import LogLikelihoodRanker
+from oldrome.protein.schema import AF2Result, BackboneSpec
 
 class ProteinBindingFlow:
     """Orchestrator for the streaming-MPNN + adaptive-AF2 + continuous-training loop.
