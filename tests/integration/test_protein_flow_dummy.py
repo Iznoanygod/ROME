@@ -4,12 +4,12 @@ import os
 
 import pytest
 
-from rome.flows.proteinbindingflow import ProteinBindingFlow
-from rome.protein import (
+from oldrome.flows.proteinbindingflow import ProteinBindingFlow
+from oldrome.protein import (
     BackboneSpec,
     ProteinBindingFlowConfig,
 )
-from rome.protein.dummy_tasks import (
+from oldrome.protein.dummy_tasks import (
     DummyRecorder,
     ScorePlan,
     in_memory_state_factory,
@@ -260,7 +260,7 @@ def test_default_stage_prediction_is_passthrough(tmp_path):
     inject chain renames or file restructuring.
     """
     import asyncio as _asyncio
-    from rome.protein.tasks import stage_prediction_task
+    from oldrome.protein.tasks import stage_prediction_task
 
     predict_dir = tmp_path / "predict"
     predict_dir.mkdir()
@@ -282,8 +282,8 @@ def test_default_stage_prediction_is_passthrough(tmp_path):
 @pytest.mark.fast
 def test_swap_in_real_tool_only_overrides_unset_hooks(tmp_path):
     """A partially-populated TaskHooks falls through to defaults for missing slots."""
-    from rome.protein.hooks import TaskHooks
-    from rome.protein import tasks as real_tasks
+    from oldrome.protein.hooks import TaskHooks
+    from oldrome.protein import tasks as real_tasks
 
     recorder = DummyRecorder()
     plan = ScorePlan(default=(85.0, 0.85, 3.5))

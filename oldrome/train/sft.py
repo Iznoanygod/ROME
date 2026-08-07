@@ -2,7 +2,7 @@ import os
 import logging
 import pathlib import Path
 
-from rome.trainer import Trainer
+from oldrome.trainer import Trainer
 
 class SFT(Trainer):
     def __init__(

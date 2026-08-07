@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from typing import Any, Awaitable, Callable, Optional  # noqa: F401
 
-from rome.protein.schema import CorpusEntry, PredictionResult
+from oldrome.protein.schema import CorpusEntry, PredictionResult
 
 
 class CorpusCurator:

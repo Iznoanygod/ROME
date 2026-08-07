@@ -1,4 +1,4 @@
-from rome.config import ModelConfig
+from oldrome.config import ModelConfig
 
 
 def test_modelconfig_defaults():

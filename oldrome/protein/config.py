@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from rome.protein.schema import BackboneSpec
+from oldrome.protein.schema import BackboneSpec
 
 
 @dataclass

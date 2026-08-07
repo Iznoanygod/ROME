@@ -1,6 +1,6 @@
 import pytest
 
-from rome.trainer import Trainer
+from oldrome.trainer import Trainer
 
 
 def test_trainer_stores_args():

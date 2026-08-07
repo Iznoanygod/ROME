@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from rome.protein.pipeline import ProteinBindingPipeline
+from oldrome.protein.pipeline import ProteinBindingPipeline
 
 
 class AdaptiveCoordinator:

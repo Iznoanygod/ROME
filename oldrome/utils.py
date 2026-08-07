@@ -1,6 +1,6 @@
 import os
 
-from rome.config import ModelConfig
+from oldrome.config import ModelConfig
 
 WEIGHT_VERSION_KEY = "model_weight_version"
 

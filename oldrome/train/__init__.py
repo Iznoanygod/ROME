@@ -1,5 +1,5 @@
-from rome.train.grpo import GRPO
-#from rome.train.sft import SFT
+from oldrome.train.grpo import GRPO
+#from oldrome.train.sft import SFT
 
 __all__ = [
     "GRPO",

@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from rome.train import GRPO
+from oldrome.train import GRPO
 
 
 def _make_grpo(reward_funcs):
@@ -90,7 +90,7 @@ def test_reward_func_wrapper_polls_until_outputs_present(monkeypatch):
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("rome.train.grpo.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("oldrome.train.grpo.asyncio.sleep", fake_sleep)
 
     wrapped = g._reward_func_wrapper(my_reward)
     rewards = asyncio.run(
@@ -160,7 +160,7 @@ def test_default_rollout_func_waits_for_missing_output(monkeypatch):
     g._workflow_ddict = ProbeDDict()
 
     slept = []
-    monkeypatch.setattr("rome.train.grpo.time.sleep", lambda s: slept.append(s))
+    monkeypatch.setattr("oldrome.train.grpo.time.sleep", lambda s: slept.append(s))
 
     out = g._default_rollout_func(prompts=["p"], trainer=None)
     assert out["request_ids"] == ["only-id"]
