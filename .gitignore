@@ -5,3 +5,10 @@ build/
 dist/
 .pytest_cache/
 rome_checkpoints/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.pdf
+*.synctex.gz
