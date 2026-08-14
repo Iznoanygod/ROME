@@ -107,6 +107,28 @@ the pipeline. IMPRESS itself runs unchanged.
 See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
 
+### Trying it without a model
+
+`rome.dummy` ships a trainer that sleeps instead of fine-tuning and an
+inference stream that emits `model example output [<uuid>]`. Everything else in
+the run is real — tasks are placed by the workflow engine, state crosses the
+DDict, and the checkpoint is a file that is genuinely written and read back —
+so it is the right first thing to run on a new backend or allocation:
+
+```bash
+dragon examples/agnostic/dummy_loop.py
+```
+
+```
+  v0 | model example output [7af1236d-dad6-4300-a8c3-a00d53a4ca65]
+round 0: corpus   4 (4 fresh) | model v0 | WAITING
+  ...
+  v3 | model example output [76ad7d76-0aef-4de1-a0fd-de6ba02390ad]
+round 6: corpus  28 (4 fresh) | model v3 | WAITING
+```
+
+The version climbs while the stream keeps serving; it is never restarted.
+
 ## Layout
 
 ```
