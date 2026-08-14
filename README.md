@@ -107,6 +107,11 @@ the pipeline. IMPRESS itself runs unchanged.
 See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
 
+`docs/proteinmpnn_training.md` covers what foundry's ProteinMPNN trainer
+actually consumes — it is a dataframe of structure-file paths, not sequences —
+plus the required columns, what IMPRESS has to emit, and the checkpoint
+lifecycle across rounds.
+
 ### Trying it without a model
 
 `rome.dummy` ships a trainer that sleeps instead of fine-tuning and an

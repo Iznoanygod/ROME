@@ -38,7 +38,7 @@ from rome.train.mpnn import (
     impress_corpus_filter,
 )
 
-NUM_CYCLES = 8
+NUM_CYCLES = 10
 DESIGNS_PER_CYCLE = 8
 
 
@@ -46,39 +46,52 @@ DESIGNS_PER_CYCLE = 8
 # The host workflow. ROME-A does not know or care what is in here.
 # ---------------------------------------------------------------------------
 
-def run_impress_cycle(cycle, mpnn_weights):
+def run_impress_cycle(cycle, mpnn_weights, model_version):
     """Stand-in for backbone -> MPNN -> predict -> extract metrics.
 
     Returns the per-design metrics a real campaign would parse out of
-    ``plddt_extract_pipeline.py``. The fake "improvement" from a trained
+    ``plddt_extract_pipeline.py``. The fake "improvement" with each published
     checkpoint is only here so the example prints something interesting.
     """
-    trained_rounds = mpnn_weights.count("/v") if mpnn_weights else 0
-    boost = 4.0 * trained_rounds
+    boost = 4.0 * model_version
 
     designs = []
     for i in range(DESIGNS_PER_CYCLE):
         designs.append({
             "backbone_id": f"bb{i % 3}",
             "sequence": "".join(random.choices("ACDEFGHIKLMNPQRSTVWY", k=40)),
-            "pdb_path": f"/scratch/cycle{cycle}/design{i}.pdb",
-            "pLDDT": min(99.0, random.gauss(76.0 + boost, 6.0)),
-            "pTM": min(0.99, random.gauss(0.78 + boost / 100, 0.06)),
-            "pAE": max(0.5, random.gauss(6.0 - boost / 10, 1.5)),
+            # The structure file IS the training example: its coordinates
+            # and its sequence are the pair ProteinMPNN learns from. For
+            # IMPRESS-R that is the structure prediction of the designed
+            # sequence, which the campaign already wrote to disk.
+            "path": f"/scratch/cycle{cycle}/design{i}_unrelaxed_rank_001.pdb",
+            # Baseline sits right at the admission thresholds, so roughly a
+            # fifth of designs are accepted before any training; each published
+            # checkpoint shifts the distribution and more of them clear.
+            "pLDDT": min(99.0, random.gauss(80.0 + boost, 6.0)),
+            "pTM": min(0.99, random.gauss(0.82 + boost / 100, 0.05)),
+            "pAE": max(0.5, random.gauss(4.5 - boost / 10, 1.2)),
         })
     return designs
 
 
 def train_proteinmpnn(shard_path, output_dir, config):
-    """Stand-in for foundry's MPNNTrainer.
+    """Stand-in for foundry's MPNN trainer.
 
-    A real deployment drops ``backend='custom'`` and lets
-    :class:`ProteinMPNNTrainer` call ``mpnn.trainers.mpnn.MPNNTrainer``
-    directly; this keeps the example runnable without foundry installed.
+    ``shard_path`` is the real thing: the parquet dataframe of structure paths
+    and weighting metadata that foundry would train on. A real deployment drops
+    ``train_func`` and lets :class:`ProteinMPNNTrainer` drive
+    ``mpnn.trainers.mpnn.MPNNTrainer`` itself; this keeps the example runnable
+    without foundry installed.
     """
-    with open(os.path.join(output_dir, "checkpoint.txt"), "w") as fd:
+    ckpt_dir = os.path.join(output_dir, "ckpt")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    checkpoint = os.path.join(ckpt_dir, "epoch-0000.ckpt")
+    with open(checkpoint, "w") as fd:
         fd.write(f"trained on {shard_path}\n")
-    return output_dir
+    # The training manager publishes whatever comes back, and the inference
+    # side needs a checkpoint *file*, not the round directory.
+    return checkpoint
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +108,9 @@ async def main():
     manager = rome.Manager(
         flow,
         data_config=rome.DataConfig(
-            min_samples=16,
+            # Only a fraction of designs clear the confidence thresholds, so
+            # the threshold is in accepted designs, not designs attempted.
+            min_samples=4,
             filter_func=impress_corpus_filter(min_pLDDT=80.0, min_pTM=0.8, max_pAE=5.0),
             dedup_key=lambda record: record["sequence"],
             sampling="top_k",
@@ -105,9 +120,10 @@ async def main():
         trainer_config=rome.TrainerConfig(
             trainer=ProteinMPNNTrainer(
                 ProteinMPNNConfig(
-                    backend="custom",
                     train_func=train_proteinmpnn,
-                    shard_format="jsonl",
+                    # Equal total weight per backbone, so a backbone that
+                    # happens to be easy cannot dominate a round.
+                    cluster_by="backbone_id",
                 ),
                 gpus=1,
             ),
@@ -124,7 +140,7 @@ async def main():
             # has.
             weights = manager.get_current_model()
 
-            designs = run_impress_cycle(cycle, weights)
+            designs = run_impress_cycle(cycle, weights, manager.model_version)
 
             # (2) Scored outputs go into the corpus. This is the only line the
             # host workflow adds to its inner loop.
