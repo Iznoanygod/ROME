@@ -12,3 +12,6 @@ rome_checkpoints/
 *.out
 *.pdf
 *.synctex.gz
+
+# Dragon leaves DDict orchestrator files in the cwd
+ddict_orc_*

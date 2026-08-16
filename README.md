@@ -155,3 +155,16 @@ protein_generation/  IMPRESS pipeline scripts
 pip install -e '.[test]'
 pytest -m fast      # unit + mocked integration, no GPUs
 ```
+
+Dragon-specific checks are scripts, not pytest modules, because the Dragon
+launcher runs a script rather than a test session:
+
+```bash
+dragon -s tests/dragon/test_namespace_dragon.py   # DDict/Event primitives
+dragon -s tests/dragon/test_manager_dragon.py     # the whole loop, 4 replicas
+dragon-cleanup-deprecated                         # after every Dragon run
+```
+
+`docs/dragon.md` records what running on Dragon turned up — notably that a
+DDict client handle cannot be shared across threads — and the one known
+scaling limit.

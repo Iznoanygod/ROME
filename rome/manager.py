@@ -44,6 +44,16 @@ from rome.utils import MODEL_PATH_KEY, MODEL_VERSION_KEY, Namespace
 #: never collides with the workflow's own state.
 ROME_NS = "rome"
 
+#: Defaults for a DDict ROME-A allocates itself. Dragon's own default
+#: ``total_mem`` is 3 MiB; a campaign corpus of a few thousand records plus the
+#: stream queues goes past that, and the failure mode is an allocation error
+#: deep in a manager rather than anything ROME-A can explain, so ask for room.
+DEFAULT_DDICT_KWARGS: Dict[str, Any] = {
+    "managers_per_node": 1,
+    "n_nodes": 1,
+    "total_mem": 1024 ** 3,
+}
+
 
 class Manager:
     """Manager class for handling tasks and data in the ROME framework.
@@ -65,7 +75,14 @@ class Manager:
         entirely by workflows that only want the data + training halves.
     ddict : DDict, optional
         Share the host workflow's dictionary instead of allocating one. ROME-A
-        namespaces all of its keys, so sharing is safe.
+        namespaces all of its keys, so sharing is safe, and passing the DDict
+        object into a task is all it takes to reach it from another node —
+        Dragon attaches the receiving process automatically.
+    ddict_kwargs : dict, optional
+        Passed to ``DDict(...)`` when ROME-A allocates its own. Worth setting
+        on a real campaign: Dragon's default ``total_mem`` is 3 MiB, which a
+        corpus of a few thousand records will exhaust, so ROME-A asks for
+        :data:`DEFAULT_DDICT_KWARGS` instead.
     auto_reload_streams : bool
         Wire published checkpoints to stream reloads (default). Turn off if the
         workflow would rather decide when inference switches models.
@@ -79,10 +96,14 @@ class Manager:
         trainer_config: Optional[TrainerConfig] = None,
         stream_configs: Optional[List[StreamConfig]] = None,
         ddict: Optional[DDict] = None,
+        ddict_kwargs: Optional[Dict[str, Any]] = None,
         auto_reload_streams: bool = True,
     ):
         self.asyncflow = asyncflow
-        self.manager_ddict = ddict if ddict is not None else DDict()
+        if ddict is not None:
+            self.manager_ddict = ddict
+        else:
+            self.manager_ddict = DDict(**{**DEFAULT_DDICT_KWARGS, **(ddict_kwargs or {})})
         self.ns = Namespace(self.manager_ddict, f"{ROME_NS}|")
         self.stop_event = Event()
         self.auto_reload_streams = auto_reload_streams
