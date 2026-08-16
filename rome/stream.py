@@ -405,8 +405,13 @@ class Stream:
             task = StreamTask(index=i, config=config, ddict=ns, root=self.ddict)
             task.status = StreamStatus.STARTING
 
+            # Captures the StreamTask and nothing else. A Dragon execution
+            # backend runs a task body in a *different process*, so the entry
+            # point has to pickle; capturing ``self`` would drag the workflow
+            # engine along, which does not pickle -- and the submission then
+            # hangs rather than raising. See docs/delta.md.
             async def stream_entry(_task=task):
-                await self._run_task(_task)
+                await run_stream_task(_task)
 
             stream_entry.__name__ = f"rome_stream_{config.name}_{i}"
             task.task_fut = submit_task(
@@ -443,72 +448,6 @@ class Stream:
             return self._group_ns[name]
         except KeyError:
             raise RuntimeError(f"stream {name!r} has not been started") from None
-
-    async def _run_task(self, task: StreamTask) -> None:
-        """The persistent loop: load a model, then process until told to stop."""
-        ctx = StreamContext(task)
-        config = task.config
-        try:
-            initial_path = config.model_path or self.ddict.get(MODEL_PATH_KEY)
-            if config.load_func is not None and initial_path is not None:
-                ctx.model = _call_user(
-                    config.load_func, initial_path, ctx, **config.load_kwargs
-                )
-                task.model_path = initial_path
-            task.local_version = int(self.ddict.get(MODEL_VERSION_KEY, 0))
-            task.status = StreamStatus.RUNNING
-
-            if config.stream_func is not None:
-                await _call_user_async(config.stream_func, ctx)
-            else:
-                await self._managed_loop(task, ctx)
-        except asyncio.CancelledError:
-            task.status = StreamStatus.STOPPED
-            raise
-        except Exception:  # noqa: BLE001 - status carries the failure
-            task.status = StreamStatus.FAILED
-            traceback.print_exc()
-            raise
-        else:
-            task.status = StreamStatus.STOPPED
-
-    async def _managed_loop(self, task: StreamTask, ctx: StreamContext) -> None:
-        config = task.config
-        while not task.stop_event.is_set():
-            task.maybe_reload(ctx)
-            batch = task.claim(config.batch_size)
-            if not batch:
-                await asyncio.sleep(config.poll_interval)
-                continue
-            await self._process_batch(task, ctx, batch)
-
-        if config.drain_on_stop:
-            task.status = StreamStatus.STOPPING
-            while True:
-                batch = task.claim(config.batch_size)
-                if not batch:
-                    break
-                await self._process_batch(task, ctx, batch)
-
-    async def _process_batch(self, task, ctx, batch: List[Tuple[str, Any]]) -> None:
-        """Run the workflow's code over one batch and publish the results.
-
-        A failure is reported per-request rather than killing the stream: one
-        malformed payload should not take down a task the rest of the campaign
-        depends on.
-        """
-        request_ids = [rid for rid, _ in batch]
-        payloads = [payload for _, payload in batch]
-        try:
-            results = await _call_user_async(task.config.process_func, payloads, ctx)
-        except Exception as exc:  # noqa: BLE001
-            traceback.print_exc()
-            for rid in request_ids:
-                task.emit(rid, {"error": repr(exc)})
-            return
-
-        for rid, result in zip(request_ids, _align(results, len(request_ids))):
-            task.emit(rid, result)
 
     # -- request/response ---------------------------------------------------
 
@@ -707,6 +646,88 @@ class Stream:
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"<Stream groups={sorted(self._configs)} tasks={len(self.stream_tasks)}>"
+
+
+# ---------------------------------------------------------------------------
+# The stream task body
+#
+# Module-level, and taking only a StreamTask, on purpose. A Dragon execution
+# backend runs the body in another process, so everything it closes over has to
+# survive pickling. A StreamTask does: its DDict views and its Dragon events are
+# transportable, and Dragon re-attaches the receiving process automatically. A
+# bound method would also carry the Stream manager and therefore the workflow
+# engine, which does not pickle -- and the symptom is a task that never starts
+# rather than an error.
+# ---------------------------------------------------------------------------
+
+async def run_stream_task(task: "StreamTask") -> None:
+    """The persistent loop: load a model, then process until told to stop."""
+    ctx = StreamContext(task)
+    config = task.config
+    try:
+        initial_path = config.model_path or task.root.get(MODEL_PATH_KEY)
+        if config.load_func is not None and initial_path is not None:
+            ctx.model = _call_user(
+                config.load_func, initial_path, ctx, **config.load_kwargs
+            )
+            task.model_path = initial_path
+        task.local_version = int(task.root.get(MODEL_VERSION_KEY, 0))
+        task.status = StreamStatus.RUNNING
+
+        if config.stream_func is not None:
+            await _call_user_async(config.stream_func, ctx)
+        else:
+            await _managed_loop(task, ctx)
+    except asyncio.CancelledError:
+        task.status = StreamStatus.STOPPED
+        raise
+    except Exception:  # noqa: BLE001 - status carries the failure
+        task.status = StreamStatus.FAILED
+        traceback.print_exc()
+        raise
+    else:
+        task.status = StreamStatus.STOPPED
+
+
+async def _managed_loop(task: "StreamTask", ctx: StreamContext) -> None:
+    config = task.config
+    while not task.stop_event.is_set():
+        task.maybe_reload(ctx)
+        batch = task.claim(config.batch_size)
+        if not batch:
+            await asyncio.sleep(config.poll_interval)
+            continue
+        await _process_batch(task, ctx, batch)
+
+    if config.drain_on_stop:
+        task.status = StreamStatus.STOPPING
+        while True:
+            batch = task.claim(config.batch_size)
+            if not batch:
+                break
+            await _process_batch(task, ctx, batch)
+
+
+async def _process_batch(task: "StreamTask", ctx: StreamContext,
+                         batch: List[Tuple[str, Any]]) -> None:
+    """Run the workflow's code over one batch and publish the results.
+
+    A failure is reported per-request rather than killing the stream: one
+    malformed payload should not take down a task the rest of the campaign
+    depends on.
+    """
+    request_ids = [rid for rid, _ in batch]
+    payloads = [payload for _, payload in batch]
+    try:
+        results = await _call_user_async(task.config.process_func, payloads, ctx)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        for rid in request_ids:
+            task.emit(rid, {"error": repr(exc)})
+        return
+
+    for rid, result in zip(request_ids, _align(results, len(request_ids))):
+        task.emit(rid, result)
 
 
 # ---------------------------------------------------------------------------

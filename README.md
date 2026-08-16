@@ -161,6 +161,12 @@ examples/        ROME-A adoption examples
 protein_generation/  IMPRESS pipeline scripts
 ```
 
+## Running it on a cluster
+
+`docs/delta.md` is the end-to-end setup: environment, installing Dragon,
+ROME-A and IMPRESS, a smoke-test ladder that proves one layer at a time, a
+Slurm script, and what still needs swapping in for a real campaign.
+
 ## Tests
 
 ```bash
