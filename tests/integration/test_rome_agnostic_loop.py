@@ -315,3 +315,54 @@ def test_manager_works_as_an_async_context_manager(asyncflow, tmp_path):
         assert not rome.started
 
     asyncio.run(scenario())
+
+
+# -- who owns the workflow engine -----------------------------------------
+
+def test_rome_builds_its_own_engine_when_not_given_one(tmp_path):
+    """A host that keeps its engine private can still hand ROME-A nothing."""
+    trainer = FakeTrainer()
+    rome = Manager(
+        data_config=DataConfig(min_samples=2),
+        trainer_config=TrainerConfig(
+            trainer=trainer, checkpoint_dir=str(tmp_path), poll_interval=0.01
+        ),
+    )
+    assert rome.asyncflow is None
+
+    async def scenario():
+        await rome.start()
+        assert rome.asyncflow is not None
+        assert rome._owns_asyncflow
+        # The engine it built is the one its sub-managers submit to.
+        assert rome.trainer.asyncflow is rome.asyncflow
+        assert rome.stream.asyncflow is rome.asyncflow
+
+        rome.add_training_data(prompt="a", score=1.0)
+        rome.add_training_data(prompt="b", score=1.0)
+        await _settle(lambda: rome.model_version == 1, timeout=10.0)
+        await rome.stop()
+
+    asyncio.run(scenario())
+    assert len(trainer.rounds) == 1
+    # Having built it, it shut it down.
+    assert rome.asyncflow is None
+    assert not rome._owns_asyncflow
+
+
+def test_a_supplied_engine_is_not_shut_down(asyncflow, tmp_path):
+    """The host workflow's engine is still running the host's own tasks."""
+    rome = Manager(
+        asyncflow,
+        trainer_config=TrainerConfig(
+            trainer=FakeTrainer(), checkpoint_dir=str(tmp_path), auto_train=False
+        ),
+    )
+
+    async def scenario():
+        await rome.start()
+        assert not rome._owns_asyncflow
+        await rome.stop()
+
+    asyncio.run(scenario())
+    assert rome.asyncflow is asyncflow      # untouched, not torn down

@@ -83,38 +83,105 @@ machinery works when the gate opens.
 
 ---
 
-## Where ROME-A would attach
+## IMPRESS-R: where ROME-A attaches
 
-Notes from reading the code, for the IMPRESS-R work.
+Verified end to end in `examples/impress_r/adaptive_rome.py`, which runs a real
+`ImpressManager` driving a real `ImpressBasePipeline` with a real
+`rome.Manager`. Only the AlphaFold and ProteinMPNN executables are stubbed, so
+it runs anywhere:
 
-A pipeline subclasses `ImpressBasePipeline` and implements three abstract
-methods:
+```bash
+dragon -s examples/impress_r/adaptive_rome.py
+```
 
-| method | role |
-|---|---|
-| `register_pipeline_tasks()` | declare tasks via `self.auto_register_task()` |
-| `run()` | the per-pipeline sequence |
-| `finalize()` | teardown |
+```
+[PIPELINE-P1] pass 1 | mpnn=proteinmpnn_v_48_020.pt
+[PIPELINE-P1] corpus 4 (+4 this pass) | WAITING
+[PIPELINE-P1] pass 2 | mpnn=proteinmpnn_v_48_020.pt
+[PIPELINE-P1] ROME-A published v1
+[PIPELINE-P1] pass 3 | mpnn=/tmp/impress_r_.../checkpoints/dummy/v1     <-- swapped
+[PIPELINE-P1] corpus 12 (+6 this pass) | WAITING
+...
+[PIPELINE-P1] pass 10 | mpnn=/tmp/impress_r_.../checkpoints/dummy/v6
+[PIPELINE-P1] ROME-A published v7
+```
 
-`ImpressManager.start(pipeline_setups=[...])` drives them, where each
-`PipelineSetup` carries `name`, `type`, `config`, and an optional
-`adaptive_fn(pipeline) -> None`. The adaptive function is how a pipeline
-reshapes the campaign: `pipeline.submit_child_pipeline_request(config)` queues a
-new pipeline, which the manager picks up.
+The campaign runs its passes with baseline weights, ROME-A publishes v1 after
+pass 2, and **pass 3 onward runs MPNN with the campaign's own checkpoint**. The
+per-pass acceptance count climbs (+4, +2, +6, +8) as the model improves, which
+is the loop closing.
 
-Two things matter for adding ROME-A:
+### `adaptive_fn` is the seam
+
+In the protein-binding use case, `adaptive_decision(pipeline)` runs after the
+pLDDT-extraction task of every pass, reads
+`af_stats_{name}_pass_{n}.csv`, and decides which designs regressed. That is the
+one point in the campaign that both *has* fresh scored designs and is *between*
+passes, so both halves of ROME-A go there:
+
+```python
+async def adaptive_decision(pipeline):
+    with open(f"af_stats_{pipeline.name}_pass_{pipeline.passes}.csv") as fd:
+        for row in csv.DictReader(fd):                 # ID, avg_plddt, ptm, avg_pae
+            design = row["ID"].split(".")[0]
+            manager.add_training_data(                 # 1. contribute
+                path=f"{pipeline.output_path_af}/{design}.pdb",
+                sequence=pipeline.iter_seqs[design],
+                backbone_id=pipeline.name,
+                pLDDT=float(row["avg_plddt"]), pTM=float(row["ptm"]),
+                pAE=float(row["avg_pae"]), score=float(row["avg_plddt"]))
+
+    weights = manager.get_current_model()              # 2. collect
+    if weights:
+        pipeline.mpnn_weights = weights                #    next pass uses it
+
+    ...                                                # IMPRESS's own logic,
+                                                       # unchanged
+```
+
+`run()` never mentions ROME-A. The degradation logic that spawns child
+pipelines is untouched.
+
+Two details that fall out of the real code:
+
+* **`pipeline.output_path_af/{design}.pdb` is the training example.** It is the
+  AlphaFold prediction of the designed sequence — coordinates and sequence in
+  one file, which is exactly what ProteinMPNN trains on, with no threading step.
+  The real `adaptive_decision` already copies these files when migrating a
+  backbone, so the path is known-good. See `docs/proteinmpnn_training.md`.
+* **The score columns are `ID, avg_plddt, ptm, avg_pae`**, and IMPRESS's own
+  criterion reads the last one: a *rising* `avg_pae` means degraded. Feed
+  `avg_plddt` to ROME-A as the corpus score and let
+  `impress_corpus_filter()` apply all three thresholds.
+
+### Which workflow engine
+
+Both work, and `rome.Manager` now supports either:
+
+```python
+rome.Manager()                        # builds its own engine at start(),
+                                      # shuts it down at stop()
+rome.Manager(impress_manager.flow)    # shares the campaign's engine
+```
+
+Giving ROME-A its own is the default in the example: its training rounds are
+then scheduled independently of the campaign's tasks, which is what "ROME-A
+handles its own task management" means in practice. Sharing puts rounds and
+campaign tasks in one engine against one allocation — better when the two must
+compete for the same fixed resources.
+
+One wrinkle if you share: `ImpressManager` creates its engine *inside*
+`start()`, and `start()` does not return until the whole campaign is done. So
+`impress_manager.flow` does not exist when you would want to construct the
+ROME-A manager. Either build the engine yourself first and hand it to both, or
+let ROME-A build its own. Both paths are covered by
+`tests/integration/test_impress_r.py`.
+
+### Other seams worth knowing
 
 * **`auto_register_task(local_task=True)` leaves the function alone** instead of
-  wrapping it as an executable task. That is the seam for a Python-level step —
-  such as contributing a scored design to ROME-A's data manager — that should
-  not become a shell command.
-* **`adaptive_fn` is the natural place to read `manager.get_current_model()`**,
-  since it already runs between pipeline stages and already decides what the
-  next generation looks like. A pipeline that picks up improved weights there
-  needs no change to `run()`.
-
-`ImpressManager` creates its own `WorkflowEngine` internally from the backend
-you hand it (`self.flow = await WorkflowEngine.create(backend=...)`). ROME-A
-expects to be given an engine, so IMPRESS-R either shares
-`manager.flow` after start, or constructs the engine first and passes it to
-both. Worth settling before wiring the two together.
+  wrapping it as an executable task. That is how a Python-level step — anything
+  that should not become a shell command — lives inside a pipeline.
+* **`PipelineSetup(kwargs={...})`** passes arbitrary configuration through to
+  the pipeline constructor, which is how the example threads `base_path`
+  through.

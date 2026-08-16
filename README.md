@@ -112,9 +112,12 @@ the pipeline. IMPRESS itself runs unchanged.
 See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
 
-`docs/impress.md` covers installing and running IMPRESS from the
-`archive/ipdps_pdz_usecase` branch — both dummy examples work, with one
-backend-rename fix — and where ROME-A would attach to its pipeline API.
+`examples/impress_r/adaptive_rome.py` is IMPRESS-R itself: a real
+`ImpressManager` driving a real pipeline, with ROME-A attached through
+`adaptive_fn` — designs go in, improved MPNN weights come back out for the next
+pass, and IMPRESS's `run()` never mentions ROME-A. `docs/impress.md` covers
+installing IMPRESS from the `archive/ipdps_pdz_usecase` branch and both halves
+of the integration.
 
 `docs/proteinmpnn_training.md` covers what foundry's ProteinMPNN trainer
 actually consumes — it is a dataframe of structure-file paths, not sequences —
