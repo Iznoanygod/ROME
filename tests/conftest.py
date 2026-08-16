@@ -125,9 +125,25 @@ def _stub_if_missing() -> None:
         _force_module("dragon")
         data = _force_module("dragon.data")
         ddict = _force_module("dragon.data.ddict")
-        # A DDict is a mapping shared across nodes; in-process, a dict is a
-        # faithful stand-in for everything ROME-A asks of it.
-        ddict.DDict = dict
+
+        class _StubDDict(dict):
+            """In-process stand-in for a Dragon DDict.
+
+            A plain ``dict`` is faithful for the mapping operations ROME-A uses,
+            but it is not constructor-compatible: ``dict(total_mem=...)`` would
+            turn the sizing arguments into *entries*, which then show up in
+            every prefix scan. So the kwargs are accepted and dropped, and
+            ``destroy`` exists because the stream manager releases the
+            dictionaries it allocates.
+            """
+
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+
+            def destroy(self):
+                self.clear()
+
+        ddict.DDict = _StubDDict
         data.ddict = ddict
         native = _force_module("dragon.native")
         event = _force_module("dragon.native.event")

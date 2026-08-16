@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from dragon.data.ddict import DDict
 from dragon.native.event import Event
 
 from rome.utils import (
@@ -44,10 +45,20 @@ from rome.utils import (
     submit_task,
 )
 
-#: Sub-namespaces inside a stream group's slice of the DDict.
+#: Sub-namespaces inside a stream group's own DDict.
 REQUEST_NS = "req"
 OUTPUT_NS = "out"
 STATUS_NS = "status"
+
+#: Defaults for a stream group's DDict. Much smaller than the manager's,
+#: because a group only ever holds requests in flight and results not yet
+#: collected -- it does not accumulate. Override per group via
+#: ``StreamConfig.ddict_kwargs``.
+DEFAULT_STREAM_DDICT_KWARGS: Dict[str, Any] = {
+    "managers_per_node": 1,
+    "n_nodes": 1,
+    "total_mem": 256 * 1024 ** 2,
+}
 
 
 class StreamStatus(Enum):
@@ -127,6 +138,12 @@ class StreamConfig:
         to pipe reward-stream results into the data manager.
     load_kwargs : dict
         Extra keyword arguments for ``load_func``.
+    ddict : DDict, optional
+        Dictionary backing this group's request and result queues. When
+        ``None`` the stream manager allocates one and destroys it on stop.
+    ddict_kwargs : dict, optional
+        Passed to ``DDict(...)`` when the manager allocates the group's
+        dictionary. Defaults to :data:`DEFAULT_STREAM_DDICT_KWARGS`.
     """
 
     name: str = "default"
@@ -146,6 +163,8 @@ class StreamConfig:
     drain_on_stop: bool = True
     on_output: Optional[Callable[[Dict[str, Any]], None]] = None
     load_kwargs: Dict[str, Any] = field(default_factory=dict)
+    ddict: Any = None
+    ddict_kwargs: Optional[Dict[str, Any]] = None
 
     def validate(self) -> None:
         if self.stream_func is None and self.process_func is None:
@@ -338,10 +357,20 @@ class StreamTask:
 class Stream:
     """Stream manager: owns every inference and reward stream in a run.
 
+    Each stream group gets **its own DDict** for requests and results, rather
+    than sharing the manager's. A dictionary has no server-side prefix query, so
+    a scan lists every key in it and filters client-side; sharing one dictionary
+    would make the cost of a replica's poll grow with the corpus, coupling two
+    rates that have nothing to do with each other. Per group, a scan covers only
+    that group's in-flight work, which does not accumulate.
+
+    The manager's own dictionary is still used, read-only from here, for the
+    published checkpoint — that is what the streams reload from.
+
     Parameters
     ----------
     ddict : Namespace
-        Shared state — the same DDict view every other ROME-A component uses.
+        ROME-A's shared state, holding the published checkpoint.
     asyncflow : WorkflowEngine
         Engine the stream tasks are submitted to, as services.
     """
@@ -352,6 +381,10 @@ class Stream:
         self.stream_tasks: List[StreamTask] = []
         self._configs: Dict[str, StreamConfig] = {}
         self._round_robin: Dict[str, int] = {}
+        #: group name -> Namespace over that group's dictionary.
+        self._group_ns: Dict[str, Namespace] = {}
+        #: Groups whose dictionary this manager allocated, and must destroy.
+        self._owned: Dict[str, Any] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -364,7 +397,7 @@ class Stream:
         config.validate()
         self._configs[config.name] = config
         self._round_robin.setdefault(config.name, 0)
-        ns = self._namespace(config.name)
+        ns = self._open_group(config)
         description = config.describe_resources()
 
         started: List[StreamTask] = []
@@ -386,8 +419,30 @@ class Stream:
             started.append(task)
         return started
 
+    def _open_group(self, config: StreamConfig) -> Namespace:
+        """Get (or allocate) the dictionary backing one stream group."""
+        existing = self._group_ns.get(config.name)
+        if existing is not None:
+            return existing
+        if config.ddict is not None:
+            group_ddict = config.ddict
+        else:
+            group_ddict = DDict(
+                **{**DEFAULT_STREAM_DDICT_KWARGS, **(config.ddict_kwargs or {})}
+            )
+            self._owned[config.name] = group_ddict
+        # No key prefix: the dictionary is dedicated to this group, so its
+        # sub-namespaces (req/out/status) are the only things in it.
+        ns = Namespace(group_ddict, "")
+        self._group_ns[config.name] = ns
+        return ns
+
     def _namespace(self, name: str) -> Namespace:
-        return self.ddict.namespace("stream", name)
+        """The namespace for a started group."""
+        try:
+            return self._group_ns[name]
+        except KeyError:
+            raise RuntimeError(f"stream {name!r} has not been started") from None
 
     async def _run_task(self, task: StreamTask) -> None:
         """The persistent loop: load a model, then process until told to stop."""
@@ -587,7 +642,12 @@ class Stream:
 
     async def stop(self, stream: Optional[str] = None, wait_for_stop: bool = True,
                    timeout: float = 60.0) -> None:
-        """Signal the stream tasks to stop, optionally waiting for them to finish."""
+        """Signal the stream tasks to stop, optionally waiting for them to finish.
+
+        Stopping does not release the group dictionaries — results drained on
+        the way down stay readable, which is the whole point of
+        ``drain_on_stop``. Call :meth:`close` once those have been collected.
+        """
         targets = self.stream_tasks if stream is None else self.tasks_for(stream)
         for task in targets:
             task.stop_event.set()
@@ -600,6 +660,33 @@ class Stream:
                                    StreamStatus.NOT_STARTED):
                     break
                 await asyncio.sleep(0.05)
+
+    def close(self, stream: Optional[str] = None) -> None:
+        """Release the dictionaries this manager allocated for its groups.
+
+        Separate from :meth:`stop` so a workflow can collect what the streams
+        drained on the way down before their storage goes away. Idempotent.
+        """
+        for name in (list(self._owned) if stream is None else [stream]):
+            self._release_group(name)
+
+    def _release_group(self, name: str) -> None:
+        """Destroy a group's dictionary, if this manager allocated it.
+
+        A dictionary the workflow supplied is left alone — it may well outlive
+        the stream, and it is not ours to free.
+        """
+        group_ddict = self._owned.pop(name, None)
+        self._group_ns.pop(name, None)
+        if group_ddict is None:
+            return
+        destroy = getattr(group_ddict, "destroy", None)
+        if destroy is None:
+            return
+        try:
+            destroy()
+        except Exception:  # noqa: BLE001 - teardown must not mask a real error
+            traceback.print_exc()
 
     # -- helpers ------------------------------------------------------------
 

@@ -162,6 +162,9 @@ class Manager:
         self.stop_event.set()
         await self.trainer.stop(wait_for_stop=wait, timeout=timeout)
         await self.stream.stop(wait_for_stop=wait, timeout=timeout)
+        # Each stream group owns a dictionary; the manager's teardown is where
+        # they are released, after the streams have finished draining.
+        self.stream.close()
         self._started = False
 
     async def __aenter__(self) -> "Manager":

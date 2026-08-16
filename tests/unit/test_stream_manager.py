@@ -399,3 +399,105 @@ def test_on_output_hook_sees_every_result(stream):
 
     asyncio.run(scenario())
     assert sorted(r["result"] for r in seen) == [1, 2]
+
+
+# -- per-group dictionaries ------------------------------------------------
+
+def test_each_group_gets_its_own_dictionary(namespace, asyncflow):
+    """Scan cost per poll must not grow with the corpus, so groups are split."""
+    stream = Stream(namespace, asyncflow)
+
+    async def scenario():
+        await stream.start(
+            StreamConfig(name="a", process_func=lambda xs: xs, poll_interval=0.01)
+        )
+        await stream.start(
+            StreamConfig(name="b", process_func=lambda xs: xs, poll_interval=0.01)
+        )
+        stream.submit("to-a", stream="a")
+        backing_a = stream._namespace("a").ddict
+        backing_b = stream._namespace("b").ddict
+        await stream.stop()
+        return backing_a, backing_b
+
+    backing_a, backing_b = asyncio.run(scenario())
+    assert backing_a is not backing_b
+
+
+def test_stream_traffic_stays_out_of_the_managers_dictionary(ddict, asyncflow):
+    """The manager's dictionary holds the checkpoint, not per-request keys."""
+    from rome.utils import Namespace
+
+    root = Namespace(ddict, "rome|")
+    stream = Stream(root, asyncflow)
+
+    async def scenario():
+        await stream.start(
+            StreamConfig(name="infer", process_func=lambda xs: xs, poll_interval=0.01)
+        )
+        ids = stream.submit_batch(list(range(20)))
+        await _settle(lambda: len(stream.get_outputs(consume=False)) == 20)
+        await stream.stop()
+        return ids
+
+    asyncio.run(scenario())
+    # Nothing the streams did touched the manager's dictionary at all.
+    assert ddict == {}
+
+
+def test_a_supplied_group_dictionary_is_not_destroyed(namespace, asyncflow):
+    """A dictionary the workflow owns outlives the stream that borrowed it."""
+    stream = Stream(namespace, asyncflow)
+    mine = {}
+
+    async def scenario():
+        await stream.start(
+            StreamConfig(name="infer", ddict=mine,
+                         process_func=lambda xs: xs, poll_interval=0.01)
+        )
+        record = await stream.get_output(stream.submit("x"), timeout=2.0)
+        await stream.stop()
+        stream.close()
+        return record
+
+    assert asyncio.run(scenario())["result"] == "x"
+    # close() released nothing it did not allocate; `mine` is still usable.
+    mine["still-here"] = True
+    assert mine["still-here"] is True
+
+
+def test_close_releases_allocated_dictionaries(namespace, asyncflow):
+    stream = Stream(namespace, asyncflow)
+
+    async def scenario():
+        await stream.start(
+            StreamConfig(name="infer", process_func=lambda xs: xs, poll_interval=0.01)
+        )
+        backing = stream._namespace("infer").ddict
+        await stream.stop()
+        assert stream._owned, "the manager should own the dictionary it allocated"
+        stream.close()
+        stream.close()          # idempotent
+        return backing
+
+    backing = asyncio.run(scenario())
+    assert not stream._owned
+    assert backing == {}        # destroy() cleared it
+
+
+def test_results_survive_stop_until_close(namespace, asyncflow):
+    """drain_on_stop is pointless if stopping also throws the results away."""
+    stream = Stream(namespace, asyncflow)
+
+    async def scenario():
+        await stream.start(
+            StreamConfig(name="infer", process_func=lambda xs: [x * 2 for x in xs],
+                         batch_size=2, poll_interval=0.05)
+        )
+        stream.submit_batch([1, 2, 3, 4])
+        await stream.stop(timeout=2.0)
+        drained = stream.get_outputs()
+        stream.close()
+        return drained
+
+    assert sorted(o["result"] for o in asyncio.run(scenario())) == [2, 4, 6, 8]

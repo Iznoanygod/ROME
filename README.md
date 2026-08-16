@@ -92,9 +92,14 @@ it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME-A:
 
 ROME-A schedules nothing itself. Training rounds and stream tasks are submitted
 to the `radical.asyncflow` `WorkflowEngine` the host workflow passes in, with
-per-task resources given as an asyncflow `task_description`. Shared state lives
-in a Dragon `DDict`; pass your own via `Manager(..., ddict=...)` and ROME-A will
-namespace its keys under `rome|` so nothing collides with the workflow's own.
+per-task resources given as an asyncflow `task_description`.
+
+Shared state lives in Dragon `DDict`s. The manager's holds the corpus and the
+published checkpoint — pass your own via `Manager(..., ddict=...)` and ROME-A
+namespaces its keys under `rome|` so nothing collides with the workflow's own.
+Each stream group gets a **separate** dictionary for its request and result
+queues, so the cost of a replica's poll does not grow with the corpus; supply
+`StreamConfig.ddict` to use one you already own.
 
 ### Use case: IMPRESS-R
 
