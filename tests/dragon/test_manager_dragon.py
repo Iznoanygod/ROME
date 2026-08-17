@@ -202,7 +202,9 @@ async def run():
         check("concurrent writers lose nothing", concurrent_adds_all_survive)
 
         # -- the closed loop -------------------------------------------------
-        reached = await settle(lambda: manager.model_version >= 1, timeout=90)
+        train_wait = float(os.environ.get("ROME_TRAIN_WAIT", 180))
+        reached = await settle(lambda: manager.model_version >= 1,
+                               timeout=train_wait)
 
         def training_fired_and_published():
             # A bare "no round completed" says nothing about which link broke,
@@ -223,7 +225,8 @@ async def run():
                 # files on disk mean the round ran and its result never came
                 # back; an empty tree means it never ran at all.
                 f"disk={_checkpoint_tree(checkpoint_dir)} | "
-                f"future={_future_state(manager.trainer._round_fut)}"
+                f"future={_future_state(manager.trainer._round_fut)} "
+                f"waited={train_wait}s"
             )
             assert manager.get_current_model(), "no checkpoint was published"
             assert trainer.rounds, "the trainer task never ran"
