@@ -262,9 +262,18 @@ The example stubs three things. Replacing them is where the remaining work is:
 | `s5_extract` writing a CSV | `plddt_extract_pipeline.py` |
 | `DummyTrainer` | `ProteinMPNNTrainer(ProteinMPNNConfig(...))` |
 
-The `adaptive_fn` does not change — it already reads the real CSV schema
-(`ID, avg_plddt, ptm, avg_pae`) and the real structure path
-(`pipeline.output_path_af/{design}.pdb`).
+The `adaptive_fn` reads the real CSV schema (`ID, avg_plddt, ptm, avg_pae`) and
+the real structure path (`pipeline.output_path_af/{design}.pdb`), but it does
+need one change before a production run: **that path is keyed by pipeline, not
+by pass, so the next pass overwrites it and `finalize()` deletes it outright.**
+The contribution step has to copy the prediction to a pass-qualified location
+before recording it, or the corpus points at files that no longer hold the
+structure that was scored. See `docs/impress.md`.
+
+Do not reuse `impress_corpus_filter()`'s defaults either — measured against a
+real campaign they admit 83% of records, because they are IMPRESS's own
+keep/drop thresholds applied to designs that already cleared them. Calibrate
+against your own `af_stats_*.csv` before a production run.
 
 For the trainer, read `docs/proteinmpnn_training.md` first: foundry's
 ProteinMPNN trains on a **dataframe of structure-file paths, not sequences**,

@@ -243,15 +243,12 @@ def test_noam_schedule_warms_up_then_decays():
 @pytest.mark.parametrize(
     "record,expected",
     [
-        ({"pLDDT": 95.0, "pTM": 0.92, "pAE": 3.0}, True),
-        ({"pLDDT": 92.9, "pTM": 0.92, "pAE": 3.0}, False),  # pLDDT too low
-        ({"pLDDT": 95.0, "pTM": 0.89, "pAE": 3.0}, False),  # pTM too low
-        ({"pLDDT": 95.0, "pTM": 0.92, "pAE": 4.1}, False),  # pAE too high
-        ({"score": 95.0}, True),                            # score stands in for pLDDT
+        ({"pLDDT": 90.0, "pTM": 0.9, "pAE": 3.0}, True),
+        ({"pLDDT": 79.9, "pTM": 0.9, "pAE": 3.0}, False),   # pLDDT too low
+        ({"pLDDT": 90.0, "pTM": 0.7, "pAE": 3.0}, False),   # pTM too low
+        ({"pLDDT": 90.0, "pTM": 0.9, "pAE": 5.1}, False),   # pAE too high
+        ({"score": 90.0}, True),                            # score stands in for pLDDT
         ({}, False),                                        # nothing to judge on
-        # A design IMPRESS itself keeps is not automatically training material:
-        # this clears IMPRESS's own bar and is still rejected.
-        ({"pLDDT": 97.3, "pTM": 0.81, "pAE": 4.9}, False),
     ],
 )
 def test_impress_corpus_filter(record, expected):

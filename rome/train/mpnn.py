@@ -559,35 +559,30 @@ def create_noam_scheduler(
 
 
 def impress_corpus_filter(
-    min_pLDDT: float = 93.0,
-    min_pTM: float = 0.90,
-    max_pAE: float = 4.0,
+    min_pLDDT: float = 80.0,
+    min_pTM: float = 0.8,
+    max_pAE: float = 5.0,
 ) -> Callable[[Dict[str, Any]], bool]:
     """Build the IMPRESS admission predicate for :class:`~rome.data.DataConfig`.
 
-    IMPRESS-R only trains on the designs the campaign is most confident in::
+    IMPRESS-R only trains on designs the campaign is confident in, and these are
+    the thresholds IMPRESS already uses to decide a design is worth keeping::
 
-        DataConfig(min_samples=24, filter_func=impress_corpus_filter())
+        DataConfig(min_samples=64, filter_func=impress_corpus_filter())
 
-    The defaults are calibrated against a real 16-target PDZ campaign — 176
-    scored designs over 8 passes — rather than against IMPRESS's own keep/drop
-    thresholds, because those are far too permissive to *select* anything:
+    .. warning::
 
-    ================  =======  =======  ===============
-    clause            median   admits
-    ================  =======  =======  ===============
-    ``pLDDT >= 80``   95.7     100%     inert
-    ``pTM >= 0.80``   0.905     89%
-    ``pAE <= 5.0``    3.81      84%
-    all three                   83%     barely a filter
-    ================  =======  =======  ===============
+       **These defaults are known to be too permissive, and are kept only because
+       a correct replacement cannot be derived yet.** Measured against a real
+       PDZ campaign they admit 83% of records: ``pLDDT >= 80`` alone admits 100%,
+       because everything reaching the score CSVs has already cleared IMPRESS's
+       own keep/drop rule — the filter is being applied downstream of itself.
 
-    Everything IMPRESS keeps clears its own bar by construction, so reusing that
-    bar admits the whole corpus and fine-tunes ProteinMPNN on its own mediocre
-    output. These thresholds instead take the campaign's top third (32%), which
-    at ~16 records per pass per 16 targets is roughly one training round per
-    pass. Note that ``pLDDT`` alone still discriminates poorly — it never falls
-    below 88 — so it is the ``pTM``/``pAE`` clauses doing the real work.
+       That campaign was run with **Boltz**, while the branch ROME-A targets
+       (``archive/ipdps_pdz_usecase``) runs **AlphaFold2-multimer**, and the two
+       predictors do not share a confidence scale. Retuning on Boltz numbers
+       would just move the mistake. Pass explicit thresholds calibrated on an
+       AF2 campaign; see ``docs/impress.md``.
     """
 
     def _passes(record: Dict[str, Any]) -> bool:

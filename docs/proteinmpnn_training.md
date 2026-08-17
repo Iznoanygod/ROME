@@ -55,9 +55,9 @@ Split by what consumes them.
 | `example_id` | `GenericDFParser`, `PandasDataset` id | `generate_example_id(["impress_r"], design_id, "1", ["A_1"])` |
 | `path` | `GenericDFParser` | absolute path to the design's structure file |
 | `assembly_id` | `GenericDFParser` | `"1"` |
-| `n_non_atomized_tokens` | `PaddedTokenBudgetBatchSampler`, filters | residue count (`len(sequence)` for a monomer) |
+| `n_non_atomized_tokens` | `PaddedTokenBudgetBatchSampler`, filters | residue count — for the PDZ case the designed chain **plus** the 10-mer peptide |
 | `cluster` | `calculate_weights_for_pdb_dataset_df` | `backbone_id` — see below |
-| `n_prot` | AF3 weighting | `1` for a monomer design |
+| `n_prot` | AF3 weighting | `2` for the PDZ binder case (designed chain + peptide); `1` for a monomer |
 | `n_peptide` | AF3 weighting | `1` if ≤20 residues else `0` (`PEPTIDE_MAX_RESIDUES = 20`) |
 | `n_nuc`, `n_ligand` | AF3 weighting | `0`, `0` |
 | `q_pn_unit_is_loi` | AF3 weighting | `0` |
@@ -72,8 +72,9 @@ Two traps worth knowing before you hit them:
 - **The stock `MPNN_FILTERS` are PDB-specific.** They reference `resolution`,
   `method`, and `deposition_date`, which a design campaign has no analogue for.
   `PandasDataset` filters are pandas query strings, so a missing column is a hard
-  error. Pass campaign-appropriate filters instead — the only stock ones worth
-  keeping are `n_non_atomized_tokens >= 30` and `n_prot == 1`.
+  error. Pass campaign-appropriate filters instead — the only stock one worth
+  keeping is `n_non_atomized_tokens >= 30` — and note `n_prot == 1` is *not* one
+  of them for the PDZ case, where it would reject every example (§5).
 
 **Clustering matters more than it looks.** The AF3 weighting is
 `w ∝ (β / N_cluster) · (a_prot·n_prot + …)`, so cluster assignment is the only
@@ -167,14 +168,18 @@ Most of this IMPRESS already has. Three things need attention:
   campaign and watch sequence recovery per round; or ask IPD for the split
   dataframes.
 - **Binder designs are multi-chain — and the PDZ campaign is one.** Settled from
-  the campaign's real prediction paths, which run through
-  `.../af/prediction/dimer_models/{target}/boltz_results_{target}/...`: the
-  structure is a **dimer**, so `n_prot == 2`, IMPRESS's `avg_pae` is an
-  *interface* pAE, and **the stock `n_prot == 1` filter rejects every example**.
-  That filter has to be relaxed to `n_prot == 2` and the weighting alphas set for
-  a two-chain complex before a shard writer will produce anything usable. Note
-  also that the predictor is **Boltz, not AlphaFold** — `af_pipeline_outputs_multi`
-  and `af_stats_*` are legacy names — so the pLDDT/pTM/pAE are Boltz's.
+  IMPRESS's own source on the branch ROME-A targets, not from campaign output:
+  `protein_binding.py` writes the prediction input as two chains, a designed
+  `>pdz` and a constant `>pep` of `EGYQDYEPEA`, and `plddt_extract_pipeline.py`
+  averages pAE over exactly the cross terms with those last 10 residues. So
+  `n_prot == 2`, `avg_pae` is an *interface* pAE, and **the stock `n_prot == 1`
+  filter rejects every example** — it has to be relaxed and the alphas set for a
+  two-chain complex before a shard writer produces anything usable.
+
+  The asymmetry matters: only chain A is designed. Chain B is the same 10-mer in
+  every example, so it is fixed context rather than a second training target, and
+  weighting it as a peptide chain (`n_peptide`) is closer to the truth than
+  counting two protein chains.
 - **The re-implementation is explicitly unstable.** foundry's README carries both
   an API-instability warning and a benchmarking warning ("please use the old
   repositories … until the API and public weights stabilize"). Pin a commit.
@@ -259,13 +264,20 @@ checkpoint exists to publish as soon as the round ends.
 
 ## 8. Open questions
 
-- ~~Monomer designs or binders?~~ **Answered: binders.** The campaign predicts
-  dimers, so `n_prot == 2` and the stock filter must be relaxed (§5).
-- Corpus size is the binding constraint, not compute: a 70-target campaign yields
-  ~770 scored designs total and ~70–140 per pass, of which the retuned filter
-  admits about a third. A round therefore trains on **tens of examples**. That is
-  small enough that per-round epochs and learning rate matter more than
-  throughput, and small enough that the drift question below is sharper.
+- ~~Monomer designs or binders?~~ **Answered: binders**, from IMPRESS's own
+  source rather than campaign output, so it holds for the branch ROME-A targets:
+  a designed PDZ chain plus a constant 10-mer peptide. `n_prot == 2` and the
+  stock filter must be relaxed (§5).
+- Corpus size is the binding constraint, not compute. IMPRESS folds **one**
+  sequence per pipeline per pass regardless of `num_seqs` (it picks a single rank
+  from MPNN's 10 and scores only that), so a 70-pipeline campaign yields ~70
+  labelled designs per pass and a few hundred over a whole run. A round trains on
+  **tens of examples**. Per-round epochs and learning rate matter far more than
+  throughput, and it sharpens the drift question below.
+- Would scoring more of MPNN's sequences per pass be worth proposing upstream?
+  Nine of ten are discarded unscored. That is the cheapest available lever on
+  corpus size, but it costs one structure prediction per extra sequence, so it
+  trades directly against campaign throughput.
 - Option A or Option B pairing (§3)? B is free; A needs a threading step built.
 - Is there access to IPD's split dataframes for mixing in PDB data, or does
   IMPRESS-R accept pure self-training and measure the drift (§5)?

@@ -189,184 +189,142 @@ let ROME-A build its own. Both paths are covered by
 
 ---
 
-## What the real campaign data says
 
-From a 70-target PDZ binder campaign: the `IMPRESS data` Drive folder
-(`prod_in_70` inputs, `prod/p1-p16` results), plus two files measured directly —
-all 176 `af_stats_*.csv` from the `p1-p16` group, and `sequences_indexed.csv`
-covering all 70 targets. These correct several assumptions the example was
-built on.
+## What the campaign source says (archive branch, AlphaFold2)
 
-### Inputs: 70 pipelines, one structure each
+Read directly out of `examples/protien_binding_usecase/` and
+`src/impress/pipelines/protein_binding.py` at `baf42a8`. These hold regardless
+of which predictor a given campaign ran, because they are IMPRESS's own logic.
 
-`prod_in_70/` holds `p1_in` … `p70_in`, matching IMPRESS's `{name}_in`
-convention. Each contains exactly **one PDB** — `p1_in/2ejy.pdb`, 129 KB. So a
-campaign is 70 independent pipelines, each seeded with a single PDZ complex, not
-a pool of backbones per pipeline.
+### The design is a dimer: a designed PDZ domain plus a fixed 10-mer peptide
 
-### One design per pass, not a batch
+`s3` writes the AlphaFold input FASTA as two chains:
 
-The score CSVs are **87–90 bytes**: a header and a single data row.
-
-```
-ID,avg_plddt,ptm,avg_pae
-8oep.pdb,97.2927451133728,0.7814092636108398,5.4314351081848145
+```python
+design_seq = self.iter_seqs[base_name][self.seq_rank][0]
+pep_seq = "EGYQDYEPEA"
+f.write(f">pdz\n{design_seq}\n>pep\n{pep_seq}\n")
 ```
 
-`examples/impress_r/adaptive_rome.py` assumes 6–8 designs per pass. The real
-campaign contributes **one record per (pipeline, pass)**. Every one of the 176
-CSVs in `p1-p16` has exactly one data row.
+and `plddt_extract_pipeline.py` computes `avg_pae` over exactly the cross terms
+between the last 10 residues and the rest:
 
-That fixes the corpus budget, and it is small:
-
-| | |
-|---|---|
-| records per target, whole campaign | **11** (uniform across all 16) |
-| records for the 16-target group | **176** |
-| records per pass, 16 targets | 16 – 32 (median 21) |
-| extrapolated to 70 targets | ~770 total, ~70–140 per pass |
-
-So `min_samples` has to be set against a per-pass yield in the tens, not the
-hundreds. Combined with the filter below (~32% admission), **`min_samples=24`**
-gives roughly one training round per pass at 70 targets. The `min_samples=64` in
-the README's snippet would fire about twice in a whole campaign.
-
-### Migration is uniform, and it is what makes 11 records out of 8 passes
-
-Each target's lineage is exactly four nodes deep — `p1`, `p1_sub1`,
-`p1_sub1_sub2`, `p1_sub1_sub2_sub3` — for all 70 targets, hitting the
-`MAX_SUB_PIPELINES = 3` cap every time. In all 48 handoffs in the `p1-p16`
-group, **the child's first pass is the parent's last pass**, not the one after:
-a migration re-runs the pass it was triggered on. The three duplicated passes
-are what turn 8 passes into 11 records.
-
-```
-p11                 p1:0.85 p2:0.87 p3:0.90 p4:0.91 p5:0.93 p6:0.87
-p11_sub1                                                    p6:0.84
-p11_sub1_sub2                                               p6:0.84
-p11_sub1_sub2_sub3                                          p6:0.67 p7:0.76 p8:0.69
-```
-<sub>pTM by pass. Three migrations fire on pass 6 alone, once the parent's pTM turns down.</sub>
-
-24 of 28 handoffs happen on a pass where pTM fell against the previous pass, so
-migration is tracking exactly the degradation ROME-A is meant to fix. Two
-consequences for the wiring: the contribution step will see the same
-`(target, pass)` more than once and must key on the full `model_id`, and a
-lineage that has spent all three migrations has no move left except a better
-model.
-
-### The predictor is Boltz, and the prediction path is not what the example assumes
-
-`af_pipeline_outputs_multi` is a legacy name. `sequences_indexed.csv` gives the
-real path of every scored structure, and it is Boltz output nested well below
-`output_path_af`:
-
-```
-{group}/protein_binding/af_pipeline_outputs_multi/{model_id}
-    /af/prediction/dimer_models/{target}
-    /boltz_results_{target}/predictions/{target}/{target}_model_0.pdb
+```python
+target_range = range(length-10, length)
+if operator.xor(row_index in target_range, col_index in target_range):
+    running_sum += values3[row_index][col_index]
 ```
 
-All 280 rows follow this template. Three things fall out of it.
+So: **`n_prot == 2`**, `avg_pae` is a genuine *interface* pAE, and the peptide is
+a **constant 10-mer, identical for every design and every pipeline**. Only chain
+A carries designed sequence.
 
-**It is a `dimer_model` — the structure is a complex, not a monomer.** This
-settles the open question: `n_prot = 2`, `avg_pae` is an interface signal and
-worth ranking on, and the AF3-style weighting should count two protein chains.
+For the ProteinMPNN trainer this settles the open question in
+`docs/proteinmpnn_training.md` §5 — but note the asymmetry: the structure has two
+chains while only one is a design target, so foundry's stock `n_prot == 1` filter
+rejects every example and the weighting alphas want setting for a two-chain
+complex where one chain is fixed context.
 
-**It is keyed by `model_id`, not by pass — so it is overwritten.** `p10_sub1`
-runs passes 2 through 6 and writes all five predictions to one
-`2pdz_model_0.pdb`. A corpus record storing that path points at a file whose
-contents change under it, so by training time it no longer holds the structure
-that was scored. **The contribution step has to copy the prediction to a
-pass-qualified location before recording it.** Deduplicating on sequence does not
-save this — the path *is* the training example. This is the one finding that
-forces a code change rather than a retune.
+### One scored design per pass, whatever `num_seqs` is
 
-**`ID` is the input PDB name** (`8oep.pdb`), identical every pass, so it cannot
-identify a record. Cluster on `ID` for weighting — sub-pipelines chain their
-suffixes and would otherwise split one structure across four clusters — but key
-records on `(model_id, pass)`.
+`num_seqs` defaults to 10, so MPNN emits 10 sequences per pass — but `s3` selects
+a single one by rank (`self.iter_seqs[base_name][self.seq_rank][0]`) and only
+that one is folded and scored. `fasta_list_2` is the contents of `{name}_in`,
+which the campaign inputs show is one PDB per pipeline.
 
-### `sequences_indexed.csv` is an analysis artifact, not a pipeline output
+**The corpus therefore grows by one record per (pipeline, pass)** — the other
+nine MPNN sequences are never scored and cannot enter it. That is the binding
+constraint on ROME-A here, and it is not a tunable: raising `num_seqs` produces
+more sequences but not more *labelled* ones.
 
-Worth being explicit, because it is the most convenient-looking file in the
-campaign. Its `kmer_cos_dist` and `aa_entropy` columns are post-hoc diversity
-metrics and its `confidence` is Boltz's own score — it matches `ptm` in none of
-the 64 `p1-p16` rows. It carries **one row per `model_id` with no pass column**,
-so it cannot be joined to `af_stats_*` per pass; it is the final state of each
-lineage node, 280 rows for 70 targets.
+### The prediction path is keyed by pipeline, not by pass
 
-For ROME-A it is still useful for two things: the designed sequences are 76–108
-residues (median 91), and **all 280 are distinct**, so the corpus needs no
-sequence-level deduplication.
-
-### The filter thresholds were wrong, and pLDDT does not discriminate
-
-All 176 records of the `p1-p16` group:
-
-| | min | p25 | median | p75 | max |
-|---|---|---|---|---|---|
-| `avg_plddt` | 87.96 | 92.30 | **95.73** | 96.99 | 97.83 |
-| `ptm` | 0.669 | 0.840 | **0.905** | 0.928 | 0.956 |
-| `avg_pae` | 1.99 | 3.14 | **3.81** | 4.82 | 8.01 |
-
-The shipped defaults, `impress_corpus_filter(80, 0.80, 5.0)`, **admit 146 of 176
-records — 83%.** Clause by clause: `pLDDT >= 80` admits 100%, `pTM >= 0.80`
-admits 89%, `pAE <= 5.0` admits 84%.
-
-This was the mistake, and it was a conceptual one rather than an arithmetic one.
-The thresholds were taken from IMPRESS's own keep/drop rule, on the reasoning
-that IMPRESS already knows what a good design is. But everything that survives
-into the score CSVs has *already* cleared that rule — the filter is being applied
-downstream of itself. Reusing it selects nothing and fine-tunes ProteinMPNN on
-the campaign's own median output, which is the failure mode ROME-A exists to
-avoid.
-
-Retuned defaults, now `impress_corpus_filter(93.0, 0.90, 4.0)`:
-
-| thresholds | admits |
-|---|---|
-| 80 / 0.80 / 5.0 (old) | 146 (83%) |
-| 90 / 0.85 / 4.5 | 105 (60%) |
-| **93 / 0.90 / 4.0** | **56 (32%)** |
-| 95 / 0.90 / 4.0 | 41 (23%) |
-| 97 / 0.90 / 3.0 | 3 (2%) |
-
-pLDDT still barely discriminates — it never drops below 88, so even the raised
-93 only removes the bottom quartile — and the pTM/pAE clauses do the real work.
-That also breaks the example's sampling: it uses `score_key="pLDDT"` with
-`sampling="top_k"`, and ranking on a value spanning 88–98 with a median of 95.7
-is close to ranking at random. **Rank by pAE (lower is better) or pTM.**
-
-### Timing: passes overlap, so there is no barrier to train at
-
-The `af_stats_*` mtimes date the whole `p1-p16` group. The 16-target, 8-pass
-campaign ran in **1 hour 49 minutes**, and successive passes *start* about
-**9 minutes** apart (median; the slowest is 29).
-
-But the passes are not a barrier. Each pass spans ~27 minutes wall clock while
-starting only 9 minutes after the one before, so at any moment three passes are
-in flight and pipeline A's pass 5 routinely finishes after pipeline B's pass 6
-has begun:
-
-```
-pass 3  |=========================|          22:04 -> 22:31
-pass 4       |=========================|     22:13 -> 22:41
-pass 5            |=========================|22:22 -> 22:50
+```python
+self.output_path_af = os.path.join(
+    self.output_path, "af/prediction/best_models")     # {base}/af_pipeline_outputs_multi/{name}/...
 ```
 
-Two consequences, and both favour the design ROME-A already has:
+and the extractor takes only `--out` (the pipeline name) for the path, using
+`--iter` solely to name the output CSV. So every pass of a pipeline writes its
+prediction to the same `best_models/{design}.pdb`.
 
-* **Training cannot be scheduled "between passes"** — there is no such moment.
-  It has to be triggered by corpus size and run concurrently with the campaign,
-  which is what `min_samples` does.
-* **Checkpoint pickup is naturally staggered.** A pipeline calls
-  `get_current_model()` when it next starts a pass, so a round that finishes
-  mid-flight is picked up by whichever pipelines start next and by the rest on
-  their following pass. Nothing blocks and nothing needs synchronising — the
-  versioned publish handles it.
+**A corpus record storing that path goes stale**, in two distinct ways: the next
+pass overwrites the file, and `finalize()` calls
+`os.unlink(f"{self.output_path_af}/{a}.pdb")` outright. So the contribution step
+has to copy the prediction to a pass-qualified location before recording it.
+Deduplicating on sequence does not help — the path *is* the training example.
 
-For sizing: a round that finishes inside ~9 minutes lands in the immediately
-following pass. A longer round is not an error, it just reaches the campaign a
-pass or two later, and at 8 passes per campaign that is the real limit on how
-many rounds a campaign can benefit from.
+This is the one finding that forces a code change, and it is confirmed on the
+branch ROME-A targets, so it is safe to act on.
+
+---
+
+## What the campaign *data* says — and why it cannot be acted on yet
+
+A 70-target PDZ campaign was measured: all 176 `af_stats_*.csv` from the
+`p1-p16` group, plus `sequences_indexed.csv` covering all 70 targets.
+
+**That campaign was not run on this branch.** Its structure paths run through
+`.../dimer_models/{target}/boltz_results_{target}/predictions/{target}/{target}_model_0.pdb`
+— it used **Boltz**. The `archive/ipdps_pdz_usecase` tree contains *zero*
+occurrences of "boltz" and ships `af2_multimer_reduced.sh`, and its extractor
+reads AlphaFold result pickles (`result_{rank}.pkl`) via `pd.read_pickle`. The
+two are different predictors behind an identical CSV schema and an identical
+`af_pipeline_outputs_multi/{pipeline}/af/prediction/` prefix, which is exactly
+why the mismatch is easy to miss.
+
+**Confirmed by the data and consistent with the source** — safe to rely on:
+
+* `ID, avg_plddt, ptm, avg_pae`, one data row per file, in all 176 CSVs.
+* Lineage is uniform: every target reaches `p{n}_sub1_sub2_sub3`, hitting the
+  `MAX_SUB_PIPELINES = 3` cap. In all 48 handoffs the child's first pass is the
+  **parent's last pass**, not the one after — a migration re-runs the pass it
+  fired on. That is what turns 8 passes into 11 records per target.
+* `ID` is the input PDB name, identical every pass, so it cannot identify a
+  record. Cluster on it for weighting; key records on `(pipeline_name, pass)`.
+* All 280 designed sequences are distinct (76–108 residues, median 91), so the
+  corpus needs no sequence-level deduplication.
+
+**Boltz-specific — do not calibrate against these:**
+
+* *Score distributions.* pLDDT median 95.7 (min 88.0), pTM 0.905, pAE 3.81.
+  These are Boltz confidences; AF2-multimer's are not on the same scale.
+* *Timing.* The 16-target campaign ran in 1h49m with passes starting ~9 min
+  apart. Boltz is far faster than AF2-multimer with MSAs, so an AF2 campaign's
+  pass budget will be substantially longer.
+* *`max_passes`.* The data shows 8; the archive branch defaults to 4.
+
+### The filter defaults are wrong, and deliberately left wrong
+
+`impress_corpus_filter(80, 0.80, 5.0)` admits **146 of 176 records — 83%**.
+Clause by clause: `pLDDT >= 80` admits 100%, `pTM >= 0.80` 89%, `pAE <= 5.0` 84%.
+
+The error is conceptual, not arithmetic, and it is predictor-independent: the
+thresholds were taken from IMPRESS's own keep/drop rule, but everything that
+reaches the score CSVs has already cleared that rule. **The filter is applied
+downstream of itself**, so it selects nothing and ROME-A fine-tunes ProteinMPNN
+on the campaign's own median output — the failure it exists to prevent.
+
+The fix needs a percentile, and a percentile needs a distribution from the right
+predictor. Retuning on the Boltz numbers (which would give ~93/0.90/4.0 for the
+top third) would just relocate the mistake onto a scale AF2 does not share, so
+the defaults stay as they are with a warning in the docstring until an AF2
+campaign's `af_stats_*.csv` are available.
+
+Two things are worth fixing regardless of predictor, because they do not depend
+on the scale:
+
+* **Rank by pAE or pTM, not pLDDT.** The example uses `score_key="pLDDT"` with
+  `sampling="top_k"`. pLDDT never dropped below 88 in 176 records, so ranking on
+  it is close to ranking at random. pAE has the widest spread (2.0–8.0) and is
+  the interface metric IMPRESS's own degradation criterion reads.
+* **Select a *fraction*, not a threshold.** Given one scored design per pipeline
+  per pass, a filter that expresses "the best third of what this campaign has
+  produced" transfers across predictors in a way that a fixed pTM cutoff does
+  not.
+
+### What would settle it
+
+`af_stats_*.csv` from a campaign run on `archive/ipdps_pdz_usecase` with
+`af2_multimer_reduced.sh` — even one pipeline group over a few passes. The
+`scripts/impress_campaign_probe.sh` sections 2 and 6 collect exactly that.
