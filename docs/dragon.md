@@ -140,20 +140,81 @@ eviction and `clear()`. The scan is slower but self-correcting, which for the
 value that decides when training fires is the safer default until someone
 chooses otherwise.
 
-### Dragon's manager threads still log during scans
+### `keys()` truncates silently while another client pops
 
-A scan running while another thread deletes the keys it is streaming produces
-manager-side tracebacks:
+Upgraded from "loud, not wrong" after measuring it properly. It is wrong.
+
+A scan running while another client deletes keys produces manager-side
+tracebacks:
 
 ```
 dragon.fli.DragonFLIError: Failed to send memory over stream channel
   ... managed_memory.c: dragon_memory_get_size() :: DRAGON_MAP_KEY_NOT_FOUND
 ```
 
-The manager streams each key's managed memory and the memory is freed under it.
-Measured client-side impact (2 scanners, 4 deleters): **0 client errors, 0
-hangs, every scan returned** a valid, possibly shorter, key list — which is fine,
-since ROME-A re-scans on the next poll. Loud, not wrong.
+**The cause.** `KeysOp.perform()` snapshots the key list, then hands it to a
+*daemon thread* to stream out, and the send takes no ownership
+(`send_mem(key, transfer_ownership=False)`). Any `pop` that frees one of those
+keys before the thread reaches it leaves a dangling descriptor. The send thread
+dies, the stream terminates early, and the client's receive loop treats early
+termination as `EOFError -> done` — a normal end of stream.
+
+**So the caller gets a short list and no error.** Measured with 400 stable keys
+that nobody touched, scanned while three processes popped 400 other keys
+(`tests/dragon/test_keys_race_dragon.py`):
+
+```
+scans           : 21
+keys() raised   : 0
+scans missing a stable key : 11
+worst stable-key count     : 39/400
+quiesced scan   : 400/400
+```
+
+A scan returned **39 of 400** keys and reported success. Nothing was lost from
+the dictionary — a quiesced scan sees all 400 — only the *view* is truncated.
+
+**Retrying does not fix it.** Truncation only ever omits, so unioning repeated
+scans is monotonically safer, but it does not converge:
+
+| passes | complete scans | worst view |
+|---|---|---|
+| 1 | 3/12 | 78/400 |
+| 2 | 6/12 | 175/400 |
+| 3 | 6/12 | 127/400 |
+| 4 | 2/4 | 229/400 |
+
+**Prefix namespacing does not protect you either.** `Namespace.keys(prefix)`
+calls `self._target.keys()` for the whole dictionary and filters in Python, so
+scanning one namespace still streams every key in the dictionary, including the
+ones another namespace is popping. Only a *separate DDict* isolates a scan from
+a pop.
+
+#### What this means for ROME-A
+
+| dictionary | pops during a run | scans | exposure |
+|---|---|---|---|
+| manager (corpus, checkpoint) | none, with `max_records=None` (the default) | `get_records`, `total_count`, `unconsumed_count` | **none** |
+| stream group | constant — claim-by-pop | pending counts, result drains | truncation, self-healing |
+
+The corpus is the part that matters, because `get_records()` builds the training
+shard and nothing re-checks its length — a truncated scan would silently train on
+a fraction of the corpus. It is safe **only because nothing pops from that
+dictionary**: eviction is the sole popper and `max_records` defaults to `None`.
+
+> **Setting `max_records` turns on eviction, which pops from the corpus
+> dictionary, which exposes every corpus scan to silent truncation.** Leave it
+> unset unless you have measured that you need it.
+
+Stream groups pop constantly, so their scans do truncate — but every stream
+protocol re-polls, and a claim is verified by the `pop` itself, so a short scan
+costs a poll interval rather than a result. That is why
+`test_manager_dragon.py` passes all seven checks while printing these
+tracebacks.
+
+The real fix is structural: give the request queue and the result queue separate
+dictionaries, so a scan of one never streams keys the other is popping. Not yet
+done.
 
 ## Operational notes
 

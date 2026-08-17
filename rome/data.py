@@ -42,7 +42,18 @@ class DataConfig:
         automatically once enough data accumulates" threshold.
     max_records : Optional[int]
         Soft cap on corpus size. When exceeded, the oldest records are evicted
-        on the next :meth:`DataManager.add`. ``None`` keeps everything.
+        on the next :meth:`DataManager.add`. ``None`` (the default) keeps
+        everything.
+
+        .. warning::
+
+           On Dragon, leave this unset unless you have measured that you need
+           it. Eviction is the only thing that pops from the corpus dictionary,
+           and a Dragon ``DDict.keys()`` scan **silently returns a truncated
+           list** when another client pops concurrently — one measured scan
+           returned 39 of 400 keys and reported success. With no evictions the
+           corpus is never popped, so scans are exact and the training shard is
+           complete. See ``docs/dragon.md``.
     score_key : str
         Field of a record holding its scalar quality score. Used by the
         built-in ``top_k`` sampler and by ``min_score``.
