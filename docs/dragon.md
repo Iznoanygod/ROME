@@ -229,49 +229,37 @@ done.
 - **ROME-A stays in its namespace.** Every key it writes is prefixed `rome|`,
   asserted by the Dragon test against a shared dictionary.
 
-### A busy service task wedges the backend's dispatch
+### A busy service task wedges dispatch — on a small node only
 
-Found while getting ROME-A's streams onto `DragonExecutionBackendV3`, and it is
-not a ROME-A bug — `tests/dragon/test_busy_service_blocks_dragon.py` reproduces
-it in about thirty lines of plain Dragon, rhapsody and asyncflow:
+**Retracted as a general finding.** `tests/dragon/test_busy_service_blocks_dragon.py`
+shows a service task that continuously scans a DDict and pops what it finds
+stopping every later task from being dispatched:
 
 ```
 q1 (no service)      RAN
 q2 (idle service)    RAN
-q3 (busy service)    BLOCKED
+q3 (busy service)    BLOCKED      <- on a 4-CPU sandbox
 ```
 
-A service task that only sleeps blocks nothing. A service task that
-continuously scans a DDict and pops what it finds — the shape of *any*
-claim-by-pop worker — stops every subsequently submitted task from ever being
-dispatched.
+On an NCSA Delta GPU node the same script prints `q3 ... RAN`. So this is a
+starvation artifact of a small allocation — a service polling at 20 Hz on a box
+with about two usable task slots — and **not** the reason a training round
+stalls while streams are running. Keep the script as an allocation smoke test;
+do not treat it as a Dragon bug.
 
-**What it looks like in ROME-A.** Inference streams are exactly that shape, so
-with streams running a training round is submitted, `TrainerStatus` goes to
-`RUNNING`, and the task never starts. Ruled out along the way, each with its own
-probe:
+**What is still unexplained.** On Delta, with 6/6 concurrent service tasks
+available and this script passing, `test_manager_dragon.py` still reports no
+training round completed. Ruled out, each with its own probe:
 
-* *Capacity.* It reproduces with free slots — on an allocation running 6/6
-  concurrent service tasks.
+* *Capacity.* Reproduces with free slots.
 * *Picklability.* The round's body pickles to an identical 2006 bytes with and
   without a stream running.
-* *Event-loop starvation.* Worst measured lag is 4 ms and a corpus scan takes
-  0.16 s; an ordinary task submitted from the same driver still runs.
-* *Poll frequency.* Raising the stream's `poll_interval` from 0.05 s to 5 s
-  changes nothing.
-* *Dataset size.* 100 records train fine with no stream; 8 records do not train
-  with one.
+* *Event-loop starvation.* Worst measured lag 4 ms, a corpus scan 0.16 s, and an
+  ordinary task submitted from the same driver still runs.
+* *Poll frequency.* 0.05 s to 5 s changes nothing.
+* *Dataset size.* 100 records train fine with no stream; 8 do not train with one.
+* *The trainer itself.* Alone on this backend it publishes `v1` in ~2 seconds.
 
-The trainer is healthy in isolation: alone on this backend it publishes `v1` in
-about two seconds.
-
-**Living with it.** The IMPRESS-R integration does not use ROME-A's streams —
-inference is IMPRESS's own MPNN and folding tasks — so a campaign is unaffected,
-and the data plus training path works on this backend. What is blocked is using
-streams and training in the same run.
-
-The likely fix is to stop scanning altogether. `Namespace.keys()` filters
-client-side, so every replica's poll streams the whole dictionary; a Dragon
-native queue would give the claim path a blocking `get` with no scan, which
-would also sidestep the silent-truncation bug above. That is a change to the
-stream layer, not yet made.
+The training assertion in `test_manager_dragon.py` now reports trainer status
+and the corpus counts, so the next run on a real allocation should say which
+link broke rather than only that no round completed.
