@@ -75,22 +75,23 @@ def run_impress_cycle(cycle, mpnn_weights, model_version):
     return designs
 
 
-def train_proteinmpnn(shard_path, output_dir, config):
-    """Stand-in for foundry's MPNN trainer.
+def train_proteinmpnn(manifest_path, output_dir, config):
+    """Stand-in for the original ProteinMPNN fine-tuning loop.
 
-    ``shard_path`` is the real thing: the parquet dataframe of structure paths
-    and weighting metadata that foundry would train on. A real deployment drops
-    ``train_func`` and lets :class:`ProteinMPNNTrainer` drive
-    ``mpnn.trainers.mpnn.MPNNTrainer`` itself; this keeps the example runnable
-    without foundry installed.
+    ``manifest_path`` is the real thing: the parquet manifest of staged
+    structures, chain designations and scores the round would train on. A real
+    deployment drops ``train_func`` and lets :class:`ProteinMPNNTrainer` fine-tune
+    ``dauparas/ProteinMPNN`` itself (``config.mpnn_repo``); this keeps the example
+    runnable without torch or the ProteinMPNN checkout.
+
+    It returns a checkpoint in the *original* ``{"model_state_dict": ...}`` format
+    — the format ``protein_mpnn_run.py`` loads — so the stub mirrors what the real
+    trainer publishes.
     """
-    ckpt_dir = os.path.join(output_dir, "ckpt")
-    os.makedirs(ckpt_dir, exist_ok=True)
-    checkpoint = os.path.join(ckpt_dir, "epoch-0000.ckpt")
+    checkpoint = os.path.join(output_dir, f"{config.model_name}.pt")
     with open(checkpoint, "w") as fd:
-        fd.write(f"trained on {shard_path}\n")
-    # The training manager publishes whatever comes back, and the inference
-    # side needs a checkpoint *file*, not the round directory.
+        fd.write(f"model_state_dict trained on {manifest_path}\n")
+    # The training manager publishes whatever comes back; MPNN loads a file.
     return checkpoint
 
 
@@ -121,9 +122,11 @@ async def main():
             trainer=ProteinMPNNTrainer(
                 ProteinMPNNConfig(
                     train_func=train_proteinmpnn,
-                    # Equal total weight per backbone, so a backbone that
-                    # happens to be easy cannot dominate a round.
-                    cluster_by="backbone_id",
+                    # A binder design is a complex: chain A is designed, chain B
+                    # (the target peptide) is fixed context — scored for the
+                    # former, not the latter.
+                    design_chains=("A",),
+                    context_chains=("B",),
                 ),
                 gpus=1,
             ),

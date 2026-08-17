@@ -145,6 +145,23 @@ ROME-A works on Dragon
 dragon -s examples/agnostic/dummy_loop.py && dragon-cleanup-deprecated
 ```
 
+That runs on `LocalExecutionBackend` (task bodies as threads). To exercise real
+multi-process placement — streams and a training round in separate processes,
+which is what a real allocation does — run the same example on the Dragon
+execution backend:
+
+```bash
+ROME_BACKEND=dragon ROME_STREAM_REPLICAS=1 ROME_GPUS=0 \
+  dragon -s examples/agnostic/dummy_loop.py && dragon-cleanup-deprecated
+```
+
+The version still climbs, but two things differ and both are backend facts, not
+ROME-A ones (see §6 and `docs/dragon.md`): keep `ROME_STREAM_REPLICAS` below the
+allocation's concurrent-task capacity so the round gets a slot, and the round's
+result is published *from disk* after a short grace because a stream service task
+blocks rhapsody's result delivery. On a real multi-node allocation raise the
+replica count and leave the fallback at its minutes-scale default.
+
 **(d) IMPRESS-R — real IMPRESS pipeline, real ROME-A, stubbed executables.**
 
 ```bash
@@ -202,14 +219,46 @@ Two things this turned up that you will hit:
   `try/except KeyError`. ROME-A's `Namespace.get` already does; this matters if
   you touch a DDict directly in your own pipeline code.
 
-**Not yet working on this backend: ROME-A's inference/reward streams.** A stream
-submitted to the multi-process Dragon backend stays in `STARTING` and its body
-never runs. The state layer is not the problem — a task in another process reads
-the driver's DDict, writes back visibly, and sets Dragon events, all confirmed —
-so it is something in the stream submission path specifically. Streams work on
-`LocalExecutionBackend`, and **the IMPRESS-R integration does not use them**
-(inference is IMPRESS's own AlphaFold and MPNN tasks), so this does not block
-the campaign. It does block using ROME-A to *serve* inference across nodes.
+**Streams work on this backend.** They did not until recently, and the cause was
+a ROME-A bug rather than anything about Dragon:
+
+`StreamManager.start()` submits a body that closes over the `StreamTask` **by
+reference**, then assigns the returned future to `task.task_fut`. A
+multi-process backend pickles that body from its dispatcher thread, which
+happens *after* the assignment — so the task now carries an `_asyncio.Future`,
+`cannot pickle '_asyncio.Future' object` is raised inside the dispatcher, and
+the dispatcher thread dies. Every task queued behind it, ROME-A's or the host
+workflow's, then silently never runs. `LocalExecutionBackend` never pickles
+anything, which is why the bug was invisible there.
+
+`StreamTask.__getstate__` now drops driver-only attributes, so the body pickles
+whenever the backend gets round to it. With that fix all the stream checks pass
+on `DragonExecutionBackendV3`: every request answered exactly once, work spread
+across replicas, distinct outputs, and streams swapping onto a new checkpoint.
+
+**Budget one task slot per stream, plus one for training.** This is the thing to
+size for. A stream is a *service* task that never returns, so it holds its slot
+for the whole run. Measured on a 4-CPU single node, this backend ran only **2
+concurrent never-returning tasks** — six submitted, two started, four stuck in
+`STARTING` forever. `scheduler_workers` did not raise it. Two consequences:
+
+* Requests routed to a replica that never started are never claimed. With four
+  replicas on a two-slot box, exactly half the batch was processed and the rest
+  sat in the queue.
+* **Training starves.** A round is a task like any other, so if the streams
+  occupy every slot, `min_samples` is reached and no round ever runs. Verified:
+  the trainer alone publishes `v1` in two seconds on this backend, and the same
+  trainer never fires with a stream holding a slot.
+
+So the allocation needs at least `num_streams + 1` concurrent task slots. On a
+real multi-node allocation that is not a constraint; on one node it is, and
+`tests/dragon/test_manager_dragon.py` takes `ROME_STREAM_REPLICAS` for exactly
+that reason.
+
+**Ask for GPUs only if you have them.** `StreamConfig.num_gpus` defaults to `1`
+and `TrainTask.gpus` is passed through, both of which put `gpus_per_rank` into
+the task description. On a node without GPUs the task is accepted and never
+placed — no error, just `STARTING` forever.
 
 ---
 
@@ -262,15 +311,24 @@ The example stubs three things. Replacing them is where the remaining work is:
 | `s5_extract` writing a CSV | `plddt_extract_pipeline.py` |
 | `DummyTrainer` | `ProteinMPNNTrainer(ProteinMPNNConfig(...))` |
 
-The `adaptive_fn` does not change — it already reads the real CSV schema
-(`ID, avg_plddt, ptm, avg_pae`) and the real structure path
-(`pipeline.output_path_af/{design}.pdb`).
+The `adaptive_fn` reads the real CSV schema (`ID, avg_plddt, ptm, avg_pae`) and
+the real structure path (`pipeline.output_path_af/{design}.pdb`), but it does
+need one change before a production run: **that path is keyed by pipeline, not
+by pass, so the next pass overwrites it and `finalize()` deletes it outright.**
+The contribution step has to copy the prediction to a pass-qualified location
+before recording it, or the corpus points at files that no longer hold the
+structure that was scored. See `docs/impress.md`.
 
-For the trainer, read `docs/proteinmpnn_training.md` first: foundry's
-ProteinMPNN trains on a **dataframe of structure-file paths, not sequences**,
-and the public weights need a one-time conversion before a round can resume from
-them. That path needs foundry installed and a GPU, and is the one part of the
-chain not yet run.
+Do not reuse `impress_corpus_filter()`'s defaults either — see §9.
+
+For the trainer, read `docs/proteinmpnn_training.md` first. It fine-tunes the
+**original `dauparas/ProteinMPNN`** — the same implementation IMPRESS runs —
+pointed at your ProteinMPNN checkout via `ProteinMPNNConfig(mpnn_repo=...)`, and
+with `publish_into_repo=True` writes the new weights into
+`{mpnn_repo}/vanilla_model_weights/{model_name}.pt` so the next pass runs them
+with no wrapper change. The data prep, chain designation and checkpoint format
+are tested; the torch fine-tuning loop needs the checkout and a GPU and has not
+been run in CI, so validate it there (or start with `train_func`).
 
 Two open items to settle before a production run, both noted in
 `docs/impress.md` and `docs/proteinmpnn_training.md`:
@@ -279,5 +337,63 @@ Two open items to settle before a production run, both noted in
   exists only in asyncflow 0.2.0. On current asyncflow, use the Dragon backend
   above.
 * Fine-tuning only on self-generated designs will drift the model, and the
-  standard mitigation — mixing in a slice of the original training distribution
-  — needs dataframes IPD has not released yet.
+  standard mitigation — mixing in a slice of the original PDB training
+  distribution — needs a held-out set the campaign does not provide.
+
+## 9. Selecting designs without knowing your thresholds yet
+
+`impress_corpus_filter()`'s defaults admit **83%** of a real campaign. They are
+IMPRESS's own keep/drop thresholds, and everything reaching the score CSVs has
+already cleared those, so the filter is applied downstream of itself and selects
+nothing. Fine-tuning on that corpus trains ProteinMPNN on its own median output.
+
+Replacing them needs a distribution, and confidence scales are predictor
+specific — an AlphaFold2-multimer campaign and a Boltz one are not comparable —
+so the numbers have to come from the run you are doing. Two ways to get there,
+and the first needs nothing up front.
+
+**Rank instead of threshold (recommended for a first run).**
+
+```python
+from rome.train.mpnn import percentile_sampler
+
+rome.DataConfig(
+    min_samples=24,
+    sample_func=percentile_sampler(0.33, on_summary=print),
+)
+```
+
+"The best third of what this campaign has produced" needs no scale, so it works
+on the first round before any distribution exists, and keeps working if you
+switch predictors. Ranking is by average rank across pAE (down) and pTM (up), so
+the two contribute equally without normalisation and neither's outliers dominate.
+`on_summary=print` reports, every round, the corpus size, how many were selected,
+and **the cutoffs an equivalent fixed filter would have used** — which is how the
+run hands you the calibration data as a byproduct.
+
+Leave `filter_func` off, or keep it only to reject malformed records. Admission
+and selection are different jobs; this does the selecting.
+
+**Watch the distribution directly.**
+
+```bash
+python scripts/af_stats_watch.py $IMPRESS_BASE --follow
+```
+
+Reads every `af_stats_*.csv` written so far and prints the live distribution
+plus what each candidate threshold triple would admit. Read-only, safe against a
+running job. Once a few passes have landed, pick the row admitting roughly a
+third and pass it explicitly:
+
+```python
+filter_func=impress_corpus_filter(min_pLDDT=..., min_pTM=..., max_pAE=...)
+```
+
+One trap it will show you: setting each of the three clauses at its 33rd
+percentile does **not** admit a third. On measured data it admitted 6%, because
+the three scores correlate. If you do choose fixed thresholds, verify the joint
+admission rate rather than reasoning clause by clause.
+
+Whichever route, `sampling="top_k"` with `score_key="pLDDT"` is worth avoiding:
+pLDDT never fell below 88 across 176 measured records, so ranking on it is close
+to ranking at random.

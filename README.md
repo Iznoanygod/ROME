@@ -31,15 +31,20 @@ model.
 
 ```python
 import rome
-from rome.train.mpnn import ProteinMPNNTrainer, impress_corpus_filter
+from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
 
 manager = rome.Manager(
     asyncflow,                                  # your existing WorkflowEngine
     data_config=rome.DataConfig(
-        min_samples=64,
-        filter_func=impress_corpus_filter(),    # only train on confident designs
+        min_samples=24,
+        sample_func=percentile_sampler(0.33),   # train on the campaign's best third
     ),
-    trainer_config=rome.TrainerConfig(trainer=ProteinMPNNTrainer()),
+    trainer_config=rome.TrainerConfig(
+        trainer=ProteinMPNNTrainer(ProteinMPNNConfig(
+            mpnn_repo="/path/to/dauparas/ProteinMPNN",   # the repo IMPRESS runs
+            publish_into_repo=True,                      # so the next pass runs it
+        )),
+    ),
 )
 await manager.start()
 
@@ -112,17 +117,23 @@ the pipeline. IMPRESS itself runs unchanged.
 See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
 
-`examples/impress_r/adaptive_rome.py` is IMPRESS-R itself: a real
-`ImpressManager` driving a real pipeline, with ROME-A attached through
-`adaptive_fn` — designs go in, improved MPNN weights come back out for the next
-pass, and IMPRESS's `run()` never mentions ROME-A. `docs/impress.md` covers
-installing IMPRESS from the `archive/ipdps_pdz_usecase` branch and both halves
-of the integration.
+`examples/impress_r/dummy_adaptive_rome.py` is the smallest version of the
+integration: IMPRESS's own dummy adaptive example with **two lines of ROME-A**
+added inside `adaptive_fn` — `add_training_data` to contribute a generation's
+designs, `get_current_model` to collect the improved model — and the
+`DummyTrainer` running a round on its own once enough designs arrive. Start here.
 
-`docs/proteinmpnn_training.md` covers what foundry's ProteinMPNN trainer
-actually consumes — it is a dataframe of structure-file paths, not sequences —
-plus the required columns, what IMPRESS has to emit, and the checkpoint
-lifecycle across rounds.
+`examples/impress_r/adaptive_rome.py` is the same seam on a real
+protein-binding pipeline: a real `ImpressManager`, designs in, improved MPNN
+weights out for the next pass, and IMPRESS's `run()` never mentioning ROME-A.
+`docs/impress.md` covers installing IMPRESS from the `archive/ipdps_pdz_usecase`
+branch and both halves of the integration.
+
+`docs/proteinmpnn_training.md` covers the trainer: it fine-tunes the **original
+`dauparas/ProteinMPNN`** — the same implementation IMPRESS runs — on the
+campaign's dimers (designed chain scored, target peptide as context), and
+publishes an original-format checkpoint straight into the repo's weights
+directory so the next pass runs it.
 
 ### Trying it without a model
 

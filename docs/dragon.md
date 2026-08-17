@@ -140,20 +140,81 @@ eviction and `clear()`. The scan is slower but self-correcting, which for the
 value that decides when training fires is the safer default until someone
 chooses otherwise.
 
-### Dragon's manager threads still log during scans
+### `keys()` truncates silently while another client pops
 
-A scan running while another thread deletes the keys it is streaming produces
-manager-side tracebacks:
+Upgraded from "loud, not wrong" after measuring it properly. It is wrong.
+
+A scan running while another client deletes keys produces manager-side
+tracebacks:
 
 ```
 dragon.fli.DragonFLIError: Failed to send memory over stream channel
   ... managed_memory.c: dragon_memory_get_size() :: DRAGON_MAP_KEY_NOT_FOUND
 ```
 
-The manager streams each key's managed memory and the memory is freed under it.
-Measured client-side impact (2 scanners, 4 deleters): **0 client errors, 0
-hangs, every scan returned** a valid, possibly shorter, key list — which is fine,
-since ROME-A re-scans on the next poll. Loud, not wrong.
+**The cause.** `KeysOp.perform()` snapshots the key list, then hands it to a
+*daemon thread* to stream out, and the send takes no ownership
+(`send_mem(key, transfer_ownership=False)`). Any `pop` that frees one of those
+keys before the thread reaches it leaves a dangling descriptor. The send thread
+dies, the stream terminates early, and the client's receive loop treats early
+termination as `EOFError -> done` — a normal end of stream.
+
+**So the caller gets a short list and no error.** Measured with 400 stable keys
+that nobody touched, scanned while three processes popped 400 other keys
+(`tests/dragon/test_keys_race_dragon.py`):
+
+```
+scans           : 21
+keys() raised   : 0
+scans missing a stable key : 11
+worst stable-key count     : 39/400
+quiesced scan   : 400/400
+```
+
+A scan returned **39 of 400** keys and reported success. Nothing was lost from
+the dictionary — a quiesced scan sees all 400 — only the *view* is truncated.
+
+**Retrying does not fix it.** Truncation only ever omits, so unioning repeated
+scans is monotonically safer, but it does not converge:
+
+| passes | complete scans | worst view |
+|---|---|---|
+| 1 | 3/12 | 78/400 |
+| 2 | 6/12 | 175/400 |
+| 3 | 6/12 | 127/400 |
+| 4 | 2/4 | 229/400 |
+
+**Prefix namespacing does not protect you either.** `Namespace.keys(prefix)`
+calls `self._target.keys()` for the whole dictionary and filters in Python, so
+scanning one namespace still streams every key in the dictionary, including the
+ones another namespace is popping. Only a *separate DDict* isolates a scan from
+a pop.
+
+#### What this means for ROME-A
+
+| dictionary | pops during a run | scans | exposure |
+|---|---|---|---|
+| manager (corpus, checkpoint) | none, with `max_records=None` (the default) | `get_records`, `total_count`, `unconsumed_count` | **none** |
+| stream group | constant — claim-by-pop | pending counts, result drains | truncation, self-healing |
+
+The corpus is the part that matters, because `get_records()` builds the training
+shard and nothing re-checks its length — a truncated scan would silently train on
+a fraction of the corpus. It is safe **only because nothing pops from that
+dictionary**: eviction is the sole popper and `max_records` defaults to `None`.
+
+> **Setting `max_records` turns on eviction, which pops from the corpus
+> dictionary, which exposes every corpus scan to silent truncation.** Leave it
+> unset unless you have measured that you need it.
+
+Stream groups pop constantly, so their scans do truncate — but every stream
+protocol re-polls, and a claim is verified by the `pop` itself, so a short scan
+costs a poll interval rather than a result. That is why
+`test_manager_dragon.py` passes all seven checks while printing these
+tracebacks.
+
+The real fix is structural: give the request queue and the result queue separate
+dictionaries, so a scan of one never streams keys the other is popping. Not yet
+done.
 
 ## Operational notes
 
@@ -167,3 +228,97 @@ since ROME-A re-scans on the next poll. Loud, not wrong.
   workflow's dictionary instead.
 - **ROME-A stays in its namespace.** Every key it writes is prefixed `rome|`,
   asserted by the Dragon test against a shared dictionary.
+
+### A never-completing task blocks result delivery for everything behind it
+
+The last thing standing between ROME-A and a working loop on the multi-process
+Dragon backend, and it is a backend defect rather than anything ROME-A does.
+
+**The measurement.** With a stream running and a training round finished:
+
+```
+manager(0)['0-0'] -> STILL BLOCKED after 20s   # the stream service, still running
+manager(0)['0-1'] -> returned in 0.12s         # the finished round's result
+```
+
+Dragon pre-registers a running task's result key, so *reading* that key blocks
+until a value arrives instead of raising `KeyError`. rhapsody's monitor sweeps
+its outstanding tasks in insertion order:
+
+```python
+for tuid in list(self._monitored_batches.keys()):
+    ...
+    try:
+        result, tb, raised, stdout, stderr = self.batch.results_ddict.manager(idx)[tuid]
+    except KeyError:
+        continue
+```
+
+A ROME-A stream is a service task that never completes, so its key is
+permanently pending, its read never returns, and the sweep never reaches
+anything behind it. The monitor thread stays *alive* the whole time, which is
+what made this hard to see.
+
+**What it looked like.** The round ran and its checkpoint was on disk, while the
+driver's future stayed pending forever and `TrainerStatus` never left `RUNNING`:
+
+```
+status=RUNNING total=100 unconsumed=100 ready=True version=0 checkpoint=None
+disk={'dummy/v1/checkpoint.json': 72} | future=PENDING waited=180.0s
+```
+
+Everything else was eliminated first, each with its own probe: capacity, task
+picklability, event-loop starvation (4 ms worst lag), stream poll frequency,
+dataset size, the trainer in isolation, which shard the result landed in (the
+right one), the stored value's shape (a clean 5-tuple), whether the monitor
+thread was alive (it was), and whether missing-key reads are slow (they are not
+— 0.4 ms; it is specifically a *pending* key that blocks).
+
+**The workaround.** `TrainerConfig.result_fallback_seconds` (default 60s). A
+round whose checkpoint is already on disk is treated as finished if the backend
+has still not delivered its result after the grace period. The round itself was
+never the problem — only the notification — so the checkpoint is the sounder
+signal. Set it to `None` to disable and wait on the backend forever.
+
+With that in place the whole loop passes on `DragonExecutionBackendV3`:
+
+```
+ok    every request answered exactly once
+ok    work spread over replicas
+ok    outputs are distinct
+ok    concurrent writers lose nothing
+ok    training fired and published
+ok    streams swapped onto the checkpoint
+ok    host workflow keys untouched
+ROME-A works on Dragon
+```
+
+**Confirmed where.** The *stall* is confirmed on both a 4-CPU node and an NCSA
+Delta GPU node — on Delta the round wrote `dummy/v1/checkpoint.json` while its
+future was still pending after 180s. The *mechanism* above (the blocked read on
+a pending key) has only been measured on the small node:
+`tests/dragon/test_service_blocks_results_dragon.py` reduces it to plain Dragon
+and rhapsody, and on Delta every task in it resolves. So the reduced repro is
+not proof for a large allocation, and whether the blocked-key read is the cause
+there is open.
+
+`tests/dragon/test_result_delivery_dragon.py` answers that on whatever
+allocation it is run on: it reproduces the stall (`ROME_FALLBACK=none`) and then
+reports which shard the result reached, the value's shape, monitor-thread
+liveness, and how long it takes to read a still-running task's key. If that read
+returns quickly on your allocation, the mechanism there is something else and
+the output says what.
+
+If the mechanism does hold, the fix belongs upstream in the monitor, which
+should test for a key's presence before reading it, or skip tasks it knows
+cannot have completed.
+
+**Telling a rescue from a normal completion.** The fallback logs
+`publishing from disk` at WARNING when it fires. If a run passes without that
+line, the backend delivered the result normally and the fallback was not
+involved.
+
+**A related trap.** `d[missing]` on a whole DDict hangs; `d.manager(i)[missing]`
+raises `KeyError` promptly. Prefer the manager-scoped form when a miss is
+expected.
+

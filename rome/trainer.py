@@ -17,6 +17,7 @@ Training starts automatically once enough data accumulates (the data manager's
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 import traceback
@@ -35,6 +36,21 @@ from rome.utils import (
     resource_description,
     submit_task,
 )
+
+
+log = logging.getLogger(__name__)
+
+
+def _has_files(root: str) -> bool:
+    """Whether a round has written anything into its output directory.
+
+    The directory itself is created by the driver before the round is
+    submitted, so only a file inside it means the task body actually ran.
+    """
+    for _dirpath, _dirnames, filenames in os.walk(root):
+        if filenames:
+            return True
+    return False
 
 
 class TrainerStatus(Enum):
@@ -88,6 +104,25 @@ class TrainerConfig:
         Stop after this many completed rounds. ``None`` runs until stopped.
     poll_interval : float
         Seconds between data-threshold checks in the auto-train loop.
+    result_fallback_seconds : Optional[float]
+        Grace period before a round whose checkpoint is already on disk is
+        treated as finished even though the execution backend never delivered
+        its result. ``None`` disables the fallback and waits on the backend
+        forever.
+
+        This exists because of a real backend defect, not as a convenience.
+        Dragon pre-registers a running task's result key, so *reading* that key
+        blocks rather than raising ``KeyError``. rhapsody's monitor sweeps its
+        outstanding tasks in order, so a task that never completes -- which is
+        exactly what a ROME-A inference stream is -- blocks the sweep on its own
+        key forever, and every result behind it, including a finished training
+        round, is never delivered. Confirmed by direct measurement::
+
+            manager(0)['0-0'] -> STILL BLOCKED after 20s   # the stream service
+            manager(0)['0-1'] -> returned in 0.12s         # the finished round
+
+        The round itself is fine: it runs, and its checkpoint is on disk. Only
+        the notification is lost, so the checkpoint is the sounder signal.
     task_description : Optional[dict]
         Backend-specific resource request forwarded to asyncflow. When
         ``None``, one is derived from the trainer's ``gpus``/``nodes``.
@@ -106,6 +141,7 @@ class TrainerConfig:
     auto_train: bool = True
     max_rounds: Optional[int] = None
     poll_interval: float = 5.0
+    result_fallback_seconds: Optional[float] = 60.0
     task_description: Optional[Dict[str, Any]] = None
     train_kwargs: Dict[str, Any] = field(default_factory=dict)
     on_checkpoint: Optional[Callable[[str, int], None]] = None
@@ -145,6 +181,8 @@ class Trainer:
         self._rounds_completed = 0
         self._last_error: Optional[str] = None
         self._in_flight = False
+        #: Future for the round currently in flight, for diagnostics only.
+        self._round_fut = None
         self._extra_callbacks: List[Callable[[str, int], None]] = []
 
     # -- lifecycle ----------------------------------------------------------
@@ -290,9 +328,43 @@ class Trainer:
             return await asyncio.to_thread(task.train, dataset, output_dir, **call_kwargs)
 
         train_entry.__name__ = f"rome_train_{task.name}"
-        return await submit_task(
+        # Kept only so a stalled round can be inspected: a round that never
+        # returns leaves no other handle on the submission.
+        self._round_fut = submit_task(
             self.asyncflow, train_entry, task_description=description
         )
+        return await self._await_round(self._round_fut, output_dir)
+
+    async def _await_round(self, fut: Any, output_dir: str) -> Any:
+        """Wait for a round, believing the disk if the backend goes quiet.
+
+        Normally this is just ``await fut``. The fallback only engages when the
+        checkpoint has appeared on disk *and* the backend still has not resolved
+        the future ``result_fallback_seconds`` later — see
+        :class:`TrainerConfig`. A failed round still surfaces its exception,
+        because a body that raised never writes a checkpoint.
+        """
+        grace = self.config.result_fallback_seconds
+        if grace is None:
+            return await fut
+
+        # Await the future for real — the same thing the loop did before the
+        # fallback existed, and what actually *drives* the task on every backend.
+        # Only if that await has not returned after `grace` seconds AND a
+        # checkpoint is already on disk do we publish from disk; otherwise keep
+        # waiting. A shield keeps the timeout from cancelling the round.
+        while True:
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=grace)
+            except asyncio.TimeoutError:
+                if _has_files(output_dir):
+                    log.warning(
+                        "round %s: checkpoint is on disk but the execution "
+                        "backend never delivered the result after %.0fs; "
+                        "publishing from disk",
+                        output_dir, grace,
+                    )
+                    return output_dir
 
     def _publish(self, checkpoint: str, version: int, sample_count: int) -> None:
         """Make a finished checkpoint visible to the rest of the workflow.
