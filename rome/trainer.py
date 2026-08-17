@@ -348,15 +348,16 @@ class Trainer:
         if grace is None:
             return await fut
 
-        settled_at: Optional[float] = None
+        # Await the future for real — the same thing the loop did before the
+        # fallback existed, and what actually *drives* the task on every backend.
+        # Only if that await has not returned after `grace` seconds AND a
+        # checkpoint is already on disk do we publish from disk; otherwise keep
+        # waiting. A shield keeps the timeout from cancelling the round.
         while True:
-            if fut.done():
-                return fut.result()
-            if _has_files(output_dir):
-                now = time.monotonic()
-                if settled_at is None:
-                    settled_at = now
-                elif now - settled_at >= grace:
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=grace)
+            except asyncio.TimeoutError:
+                if _has_files(output_dir):
                     log.warning(
                         "round %s: checkpoint is on disk but the execution "
                         "backend never delivered the result after %.0fs; "
@@ -364,7 +365,6 @@ class Trainer:
                         output_dir, grace,
                     )
                     return output_dir
-            await asyncio.sleep(min(1.0, max(0.05, grace / 20.0)))
 
     def _publish(self, checkpoint: str, version: int, sample_count: int) -> None:
         """Make a finished checkpoint visible to the rest of the workflow.
