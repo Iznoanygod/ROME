@@ -598,6 +598,164 @@ def impress_corpus_filter(
     return _passes
 
 
+def score_percentiles(
+    records: Sequence[Dict[str, Any]],
+    keys: Sequence[str] = ("pLDDT", "pTM", "pAE"),
+) -> Dict[str, Dict[str, float]]:
+    """Summarise the score distribution a campaign has produced so far.
+
+    Calibration data, gathered from the run itself. Every confidence threshold
+    in IMPRESS-R is predictor-specific — AlphaFold2-multimer and Boltz do not
+    share a scale — so the only safe way to set one is to look at what *this*
+    campaign is producing::
+
+        from rome.train.mpnn import score_percentiles
+        print(score_percentiles(manager.data.get_records()))
+
+    Returns ``{key: {"n", "min", "p10", "p25", "median", "p75", "p90", "max"}}``,
+    skipping keys no record carries.
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    for key in keys:
+        values = sorted(
+            float(r[key]) for r in records
+            if r.get(key) is not None and _is_number(r[key])
+        )
+        if not values:
+            continue
+
+        def q(p: float) -> float:
+            return values[min(len(values) - 1, int(p * len(values)))]
+
+        out[key] = {
+            "n": float(len(values)), "min": values[0], "p10": q(0.10),
+            "p25": q(0.25), "median": q(0.50), "p75": q(0.75),
+            "p90": q(0.90), "max": values[-1],
+        }
+    return out
+
+
+def _is_number(value: Any) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+#: Default ranking for the PDZ binder case: interface pAE down, pTM up. pLDDT is
+#: deliberately absent — in a measured campaign it never fell below 88, so it
+#: separates almost nothing.
+DEFAULT_RANK_BY = {"pAE": "low", "pTM": "high"}
+
+
+def percentile_sampler(
+    fraction: float = 0.33,
+    *,
+    rank_by: Optional[Dict[str, str]] = None,
+    min_shard: int = 8,
+    on_summary: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]:
+    """Select the best ``fraction`` of the corpus, calibrating as it goes.
+
+    Use this instead of tuning :func:`impress_corpus_filter`'s thresholds::
+
+        DataConfig(min_samples=24, sample_func=percentile_sampler(0.33))
+
+    **Why a fraction rather than a cutoff.** A threshold like ``pTM >= 0.90``
+    is a claim about a specific predictor's confidence scale, and IMPRESS
+    campaigns have been run on both AlphaFold2-multimer and Boltz, which do not
+    share one. A fraction says "the best third of what this campaign has
+    produced", which needs no scale and calibrates itself on the fly — including
+    on the first round, before anyone has seen the distribution.
+
+    It also sidesteps the trap that makes IMPRESS's own keep/drop thresholds
+    useless here: everything in the corpus already cleared them, so reusing them
+    as an admission filter selects nothing.
+
+    Ranking is by **average rank across ``rank_by``**, not by a weighted sum of
+    raw values. Rank-averaging is non-parametric, so pTM (0–1) and pAE (Å, open
+    ended) contribute equally without needing to be normalised, and it is
+    unaffected by either metric's outliers.
+
+    Parameters
+    ----------
+    fraction : float
+        Portion of the corpus to keep, in (0, 1].
+    rank_by : Optional[Dict[str, str]]
+        Record field -> ``'high'`` (higher is better) or ``'low'``. Defaults to
+        :data:`DEFAULT_RANK_BY`. Fields absent from every record are ignored, so
+        a corpus carrying only some of them still ranks.
+    min_shard : int
+        Never return fewer than this many records — a strict fraction of a small
+        early corpus can otherwise produce a shard too small to train on. Capped
+        at the corpus size.
+    on_summary : Optional[Callable[[dict], None]]
+        Called with ``{"corpus", "selected", "ranked_by", "percentiles",
+        "cutoffs"}`` each time a shard is built. Pass ``print`` or a logger to
+        watch the campaign's distribution move, and to read off the thresholds
+        an equivalent fixed filter would have used.
+    """
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+    directions = dict(rank_by if rank_by is not None else DEFAULT_RANK_BY)
+    for key, direction in directions.items():
+        if direction not in ("high", "low"):
+            raise ValueError(
+                f"rank_by[{key!r}] must be 'high' or 'low', got {direction!r}"
+            )
+
+    def _sample(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        records = list(records)
+        if not records:
+            return records
+
+        usable = {
+            key: direction for key, direction in directions.items()
+            if any(_is_number(r.get(key)) for r in records)
+        }
+        if not usable:
+            # Nothing to rank on: keep the corpus rather than silently
+            # returning an arbitrary slice of it.
+            return records
+
+        # Average rank across metrics. Missing values sort last within their
+        # metric, so a partially-scored record is penalised but not dropped.
+        total = {id(r): 0.0 for r in records}
+        for key, direction in usable.items():
+            ordered = sorted(
+                records,
+                key=lambda r: (
+                    not _is_number(r.get(key)),
+                    -float(r[key]) if _is_number(r.get(key)) and direction == "high"
+                    else (float(r[key]) if _is_number(r.get(key)) else 0.0),
+                ),
+            )
+            for position, record in enumerate(ordered):
+                total[id(record)] += position
+
+        ranked = sorted(records, key=lambda r: (total[id(r)], str(r.get("uid", ""))))
+        keep = max(min(min_shard, len(records)), int(round(len(records) * fraction)))
+        selected = ranked[:keep]
+
+        if on_summary is not None:
+            cutoffs = {}
+            for key, direction in usable.items():
+                values = [float(r[key]) for r in selected if _is_number(r.get(key))]
+                if values:
+                    cutoffs[key] = min(values) if direction == "high" else max(values)
+            on_summary({
+                "corpus": len(records),
+                "selected": len(selected),
+                "ranked_by": usable,
+                "percentiles": score_percentiles(records, tuple(usable)),
+                "cutoffs": cutoffs,
+            })
+        return selected
+
+    return _sample
+
+
 __all__ = [
     "ProteinMPNNConfig",
     "ProteinMPNNTrainer",
@@ -606,6 +764,9 @@ __all__ = [
     "latest_checkpoint_file",
     "create_noam_scheduler",
     "impress_corpus_filter",
+    "percentile_sampler",
+    "score_percentiles",
+    "DEFAULT_RANK_BY",
     "generate_example_id",
     "PEPTIDE_MAX_RESIDUES",
     "DEFAULT_FILTERS",

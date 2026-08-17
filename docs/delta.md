@@ -270,10 +270,7 @@ The contribution step has to copy the prediction to a pass-qualified location
 before recording it, or the corpus points at files that no longer hold the
 structure that was scored. See `docs/impress.md`.
 
-Do not reuse `impress_corpus_filter()`'s defaults either — measured against a
-real campaign they admit 83% of records, because they are IMPRESS's own
-keep/drop thresholds applied to designs that already cleared them. Calibrate
-against your own `af_stats_*.csv` before a production run.
+Do not reuse `impress_corpus_filter()`'s defaults either — see §9.
 
 For the trainer, read `docs/proteinmpnn_training.md` first: foundry's
 ProteinMPNN trains on a **dataframe of structure-file paths, not sequences**,
@@ -290,3 +287,61 @@ Two open items to settle before a production run, both noted in
 * Fine-tuning only on self-generated designs will drift the model, and the
   standard mitigation — mixing in a slice of the original training distribution
   — needs dataframes IPD has not released yet.
+
+## 9. Selecting designs without knowing your thresholds yet
+
+`impress_corpus_filter()`'s defaults admit **83%** of a real campaign. They are
+IMPRESS's own keep/drop thresholds, and everything reaching the score CSVs has
+already cleared those, so the filter is applied downstream of itself and selects
+nothing. Fine-tuning on that corpus trains ProteinMPNN on its own median output.
+
+Replacing them needs a distribution, and confidence scales are predictor
+specific — an AlphaFold2-multimer campaign and a Boltz one are not comparable —
+so the numbers have to come from the run you are doing. Two ways to get there,
+and the first needs nothing up front.
+
+**Rank instead of threshold (recommended for a first run).**
+
+```python
+from rome.train.mpnn import percentile_sampler
+
+rome.DataConfig(
+    min_samples=24,
+    sample_func=percentile_sampler(0.33, on_summary=print),
+)
+```
+
+"The best third of what this campaign has produced" needs no scale, so it works
+on the first round before any distribution exists, and keeps working if you
+switch predictors. Ranking is by average rank across pAE (down) and pTM (up), so
+the two contribute equally without normalisation and neither's outliers dominate.
+`on_summary=print` reports, every round, the corpus size, how many were selected,
+and **the cutoffs an equivalent fixed filter would have used** — which is how the
+run hands you the calibration data as a byproduct.
+
+Leave `filter_func` off, or keep it only to reject malformed records. Admission
+and selection are different jobs; this does the selecting.
+
+**Watch the distribution directly.**
+
+```bash
+python scripts/af_stats_watch.py $IMPRESS_BASE --follow
+```
+
+Reads every `af_stats_*.csv` written so far and prints the live distribution
+plus what each candidate threshold triple would admit. Read-only, safe against a
+running job. Once a few passes have landed, pick the row admitting roughly a
+third and pass it explicitly:
+
+```python
+filter_func=impress_corpus_filter(min_pLDDT=..., min_pTM=..., max_pAE=...)
+```
+
+One trap it will show you: setting each of the three clauses at its 33rd
+percentile does **not** admit a third. On measured data it admitted 6%, because
+the three scores correlate. If you do choose fixed thresholds, verify the joint
+admission rate rather than reasoning clause by clause.
+
+Whichever route, `sampling="top_k"` with `score_key="pLDDT"` is worth avoiding:
+pLDDT never fell below 88 across 176 measured records, so ranking on it is close
+to ranking at random.

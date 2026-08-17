@@ -326,3 +326,103 @@ def test_grpo_builds_a_trl_config_pointing_at_the_round_output(tmp_path):
     assert trl_config.output_dir == str(tmp_path)
     assert trl_config.learning_rate == 1e-5
     assert trl_config.seed == 7
+
+
+# -- on-the-fly calibration ------------------------------------------------
+
+def _scored(uid, ptm, pae):
+    return {"uid": uid, "backbone_id": "bb", "path": f"/{uid}.pdb",
+            "sequence": "A" * 90, "pTM": ptm, "pAE": pae}
+
+
+def test_percentile_sampler_keeps_the_best_fraction():
+    from rome.train.mpnn import percentile_sampler
+
+    corpus = [_scored(f"d{i}", 0.70 + i * 0.02, 8.0 - i * 0.4) for i in range(20)]
+    kept = percentile_sampler(0.25, min_shard=1)(corpus)
+
+    assert len(kept) == 5
+    assert [r["uid"] for r in kept] == ["d19", "d18", "d17", "d16", "d15"]
+
+
+def test_percentile_sampler_needs_no_threshold_to_calibrate():
+    """The same fraction selects sensibly on two incompatible score scales."""
+    from rome.train.mpnn import percentile_sampler
+
+    sampler = percentile_sampler(0.5, min_shard=1)
+    # A generous predictor and a harsh one, same ordering.
+    generous = [_scored(f"g{i}", 0.90 + i * 0.005, 3.0 - i * 0.1) for i in range(10)]
+    harsh = [_scored(f"h{i}", 0.40 + i * 0.03, 18.0 - i * 0.9) for i in range(10)]
+
+    assert [r["uid"][1:] for r in sampler(generous)] == \
+           [r["uid"][1:] for r in sampler(harsh)]
+
+
+def test_percentile_sampler_balances_the_two_metrics():
+    """Rank-averaging, so pAE's open-ended scale cannot swamp pTM's 0-1."""
+    from rome.train.mpnn import percentile_sampler
+
+    corpus = [
+        _scored("both_good", 0.95, 2.0),
+        _scored("ptm_only", 0.94, 30.0),      # a pAE outlier
+        _scored("pae_only", 0.60, 2.1),
+        _scored("both_bad", 0.55, 25.0),
+    ]
+    kept = [r["uid"] for r in percentile_sampler(0.5, min_shard=1)(corpus)]
+    assert kept[0] == "both_good"
+    assert "both_bad" not in kept
+
+
+def test_percentile_sampler_floors_the_shard_on_a_small_corpus():
+    from rome.train.mpnn import percentile_sampler
+
+    corpus = [_scored(f"d{i}", 0.8 + i * 0.01, 5.0 - i * 0.1) for i in range(6)]
+    assert len(percentile_sampler(0.1, min_shard=4)(corpus)) == 4
+    # ...but never more than the corpus holds.
+    assert len(percentile_sampler(0.1, min_shard=99)(corpus)) == 6
+
+
+def test_percentile_sampler_ranks_on_whatever_the_corpus_carries():
+    """A campaign emitting only pTM still ranks; a scoreless one is kept whole."""
+    from rome.train.mpnn import percentile_sampler
+
+    ptm_only = [{"uid": f"d{i}", "pTM": 0.5 + i * 0.1} for i in range(4)]
+    assert [r["uid"] for r in percentile_sampler(0.5, min_shard=1)(ptm_only)] == ["d3", "d2"]
+
+    unscored = [{"uid": "a"}, {"uid": "b"}]
+    assert len(percentile_sampler(0.5, min_shard=1)(unscored)) == 2
+
+
+def test_percentile_sampler_reports_the_equivalent_thresholds():
+    """on_summary is how a run tells you what a fixed filter would have used."""
+    from rome.train.mpnn import percentile_sampler
+
+    seen = {}
+    corpus = [_scored(f"d{i}", 0.70 + i * 0.02, 8.0 - i * 0.4) for i in range(10)]
+    percentile_sampler(0.5, min_shard=1, on_summary=seen.update)(corpus)
+
+    assert seen["corpus"] == 10 and seen["selected"] == 5
+    assert seen["cutoffs"]["pTM"] == pytest.approx(0.80)   # lowest kept pTM
+    assert seen["cutoffs"]["pAE"] == pytest.approx(6.0)    # highest kept pAE
+    assert seen["percentiles"]["pTM"]["n"] == 10
+
+
+def test_percentile_sampler_rejects_a_nonsense_fraction():
+    from rome.train.mpnn import percentile_sampler
+
+    with pytest.raises(ValueError, match="fraction"):
+        percentile_sampler(0.0)
+    with pytest.raises(ValueError, match="high.*low"):
+        percentile_sampler(0.5, rank_by={"pTM": "sideways"})
+
+
+def test_score_percentiles_summarises_what_the_campaign_produced():
+    from rome.train.mpnn import score_percentiles
+
+    corpus = [_scored(f"d{i}", 0.5 + i * 0.05, float(i)) for i in range(10)]
+    summary = score_percentiles(corpus, keys=("pTM", "pAE", "pLDDT"))
+
+    assert "pLDDT" not in summary            # no record carries it
+    assert summary["pTM"]["n"] == 10
+    assert summary["pAE"]["min"] == 0.0 and summary["pAE"]["max"] == 9.0
+    assert summary["pAE"]["median"] == pytest.approx(5.0)

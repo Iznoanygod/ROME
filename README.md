@@ -31,13 +31,13 @@ model.
 
 ```python
 import rome
-from rome.train.mpnn import ProteinMPNNTrainer, impress_corpus_filter
+from rome.train.mpnn import ProteinMPNNTrainer, percentile_sampler
 
 manager = rome.Manager(
     asyncflow,                                  # your existing WorkflowEngine
     data_config=rome.DataConfig(
-        min_samples=64,
-        filter_func=impress_corpus_filter(),    # only train on confident designs
+        min_samples=24,
+        sample_func=percentile_sampler(0.33),   # train on the campaign's best third
     ),
     trainer_config=rome.TrainerConfig(trainer=ProteinMPNNTrainer()),
 )
