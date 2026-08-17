@@ -31,7 +31,7 @@ model.
 
 ```python
 import rome
-from rome.train.mpnn import ProteinMPNNTrainer, percentile_sampler
+from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
 
 manager = rome.Manager(
     asyncflow,                                  # your existing WorkflowEngine
@@ -39,7 +39,12 @@ manager = rome.Manager(
         min_samples=24,
         sample_func=percentile_sampler(0.33),   # train on the campaign's best third
     ),
-    trainer_config=rome.TrainerConfig(trainer=ProteinMPNNTrainer()),
+    trainer_config=rome.TrainerConfig(
+        trainer=ProteinMPNNTrainer(ProteinMPNNConfig(
+            mpnn_repo="/path/to/dauparas/ProteinMPNN",   # the repo IMPRESS runs
+            publish_into_repo=True,                      # so the next pass runs it
+        )),
+    ),
 )
 await manager.start()
 
@@ -119,10 +124,11 @@ pass, and IMPRESS's `run()` never mentions ROME-A. `docs/impress.md` covers
 installing IMPRESS from the `archive/ipdps_pdz_usecase` branch and both halves
 of the integration.
 
-`docs/proteinmpnn_training.md` covers what foundry's ProteinMPNN trainer
-actually consumes — it is a dataframe of structure-file paths, not sequences —
-plus the required columns, what IMPRESS has to emit, and the checkpoint
-lifecycle across rounds.
+`docs/proteinmpnn_training.md` covers the trainer: it fine-tunes the **original
+`dauparas/ProteinMPNN`** — the same implementation IMPRESS runs — on the
+campaign's dimers (designed chain scored, target peptide as context), and
+publishes an original-format checkpoint straight into the repo's weights
+directory so the next pass runs it.
 
 ### Trying it without a model
 

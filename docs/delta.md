@@ -304,11 +304,14 @@ structure that was scored. See `docs/impress.md`.
 
 Do not reuse `impress_corpus_filter()`'s defaults either — see §9.
 
-For the trainer, read `docs/proteinmpnn_training.md` first: foundry's
-ProteinMPNN trains on a **dataframe of structure-file paths, not sequences**,
-and the public weights need a one-time conversion before a round can resume from
-them. That path needs foundry installed and a GPU, and is the one part of the
-chain not yet run.
+For the trainer, read `docs/proteinmpnn_training.md` first. It fine-tunes the
+**original `dauparas/ProteinMPNN`** — the same implementation IMPRESS runs —
+pointed at your ProteinMPNN checkout via `ProteinMPNNConfig(mpnn_repo=...)`, and
+with `publish_into_repo=True` writes the new weights into
+`{mpnn_repo}/vanilla_model_weights/{model_name}.pt` so the next pass runs them
+with no wrapper change. The data prep, chain designation and checkpoint format
+are tested; the torch fine-tuning loop needs the checkout and a GPU and has not
+been run in CI, so validate it there (or start with `train_func`).
 
 Two open items to settle before a production run, both noted in
 `docs/impress.md` and `docs/proteinmpnn_training.md`:
@@ -317,8 +320,8 @@ Two open items to settle before a production run, both noted in
   exists only in asyncflow 0.2.0. On current asyncflow, use the Dragon backend
   above.
 * Fine-tuning only on self-generated designs will drift the model, and the
-  standard mitigation — mixing in a slice of the original training distribution
-  — needs dataframes IPD has not released yet.
+  standard mitigation — mixing in a slice of the original PDB training
+  distribution — needs a held-out set the campaign does not provide.
 
 ## 9. Selecting designs without knowing your thresholds yet
 
