@@ -261,6 +261,27 @@ class StreamTask:
         self._status_key = f"{STATUS_NS}|{index}"
         self.status = StreamStatus.NOT_STARTED
 
+    # -- crossing a process boundary ----------------------------------------
+
+    #: Attributes that belong to the *driver* and must never be pickled into a
+    #: task process. ``task_fut`` is the killer: the task body closes over this
+    #: object by reference, and a multi-process backend pickles that body from
+    #: its dispatcher thread *after* :meth:`StreamManager.start` has assigned
+    #: the submission future here. An ``_asyncio.Future`` cannot be pickled, so
+    #: the dispatcher raises, dies, and every task queued behind it -- ROME-A's
+    #: or the host workflow's -- silently never runs. Dropping it here makes the
+    #: body picklable whenever the backend gets round to it.
+    _DRIVER_ONLY = ("task_fut",)
+
+    def __getstate__(self) -> Dict[str, Any]:
+        state = dict(self.__dict__)
+        for name in self._DRIVER_ONLY:
+            state[name] = None
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+
     # -- status -------------------------------------------------------------
 
     @property

@@ -202,14 +202,46 @@ Two things this turned up that you will hit:
   `try/except KeyError`. ROME-A's `Namespace.get` already does; this matters if
   you touch a DDict directly in your own pipeline code.
 
-**Not yet working on this backend: ROME-A's inference/reward streams.** A stream
-submitted to the multi-process Dragon backend stays in `STARTING` and its body
-never runs. The state layer is not the problem — a task in another process reads
-the driver's DDict, writes back visibly, and sets Dragon events, all confirmed —
-so it is something in the stream submission path specifically. Streams work on
-`LocalExecutionBackend`, and **the IMPRESS-R integration does not use them**
-(inference is IMPRESS's own AlphaFold and MPNN tasks), so this does not block
-the campaign. It does block using ROME-A to *serve* inference across nodes.
+**Streams work on this backend.** They did not until recently, and the cause was
+a ROME-A bug rather than anything about Dragon:
+
+`StreamManager.start()` submits a body that closes over the `StreamTask` **by
+reference**, then assigns the returned future to `task.task_fut`. A
+multi-process backend pickles that body from its dispatcher thread, which
+happens *after* the assignment — so the task now carries an `_asyncio.Future`,
+`cannot pickle '_asyncio.Future' object` is raised inside the dispatcher, and
+the dispatcher thread dies. Every task queued behind it, ROME-A's or the host
+workflow's, then silently never runs. `LocalExecutionBackend` never pickles
+anything, which is why the bug was invisible there.
+
+`StreamTask.__getstate__` now drops driver-only attributes, so the body pickles
+whenever the backend gets round to it. With that fix all the stream checks pass
+on `DragonExecutionBackendV3`: every request answered exactly once, work spread
+across replicas, distinct outputs, and streams swapping onto a new checkpoint.
+
+**Budget one task slot per stream, plus one for training.** This is the thing to
+size for. A stream is a *service* task that never returns, so it holds its slot
+for the whole run. Measured on a 4-CPU single node, this backend ran only **2
+concurrent never-returning tasks** — six submitted, two started, four stuck in
+`STARTING` forever. `scheduler_workers` did not raise it. Two consequences:
+
+* Requests routed to a replica that never started are never claimed. With four
+  replicas on a two-slot box, exactly half the batch was processed and the rest
+  sat in the queue.
+* **Training starves.** A round is a task like any other, so if the streams
+  occupy every slot, `min_samples` is reached and no round ever runs. Verified:
+  the trainer alone publishes `v1` in two seconds on this backend, and the same
+  trainer never fires with a stream holding a slot.
+
+So the allocation needs at least `num_streams + 1` concurrent task slots. On a
+real multi-node allocation that is not a constraint; on one node it is, and
+`tests/dragon/test_manager_dragon.py` takes `ROME_STREAM_REPLICAS` for exactly
+that reason.
+
+**Ask for GPUs only if you have them.** `StreamConfig.num_gpus` defaults to `1`
+and `TrainTask.gpus` is passed through, both of which put `gpus_per_rank` into
+the task description. On a node without GPUs the task is accepted and never
+placed — no error, just `STARTING` forever.
 
 ---
 

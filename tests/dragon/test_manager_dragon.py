@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import asyncio
 import tempfile
+import time
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -44,12 +45,19 @@ def check(name, fn):
         print(f"ok    {name}")
 
 
-async def settle(predicate, timeout=60.0, interval=0.05):
-    for _ in range(int(timeout / interval)):
+async def settle(predicate, timeout=60.0, interval=0.25):
+    """Wait on wall-clock time, not iteration count.
+
+    A prefix scan against a dictionary that stream replicas are popping from
+    takes far longer than the poll interval, so counting iterations makes the
+    timeout effectively unbounded and a failure looks like a hang.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if predicate():
             return True
         await asyncio.sleep(interval)
-    return False
+    return predicate()
 
 
 async def run():
@@ -71,7 +79,8 @@ async def run():
     ddict["host_workflow_state"] = {"campaign": "smoke"}
 
     checkpoint_dir = tempfile.mkdtemp(prefix="rome_dragon_")
-    trainer = DummyTrainer(train_seconds=0.5, gpus=1)
+    trainer = DummyTrainer(train_seconds=0.5,
+                           gpus=int(os.environ.get("ROME_TRAIN_GPUS", 0)))
 
     manager = rome.Manager(
         flow,
@@ -85,9 +94,12 @@ async def run():
                 name="infer",
                 load_func=dummy_load,
                 process_func=dummy_infer,
-                num_streams=4,
+                num_streams=int(os.environ.get("ROME_STREAM_REPLICAS", 2)),
                 batch_size=2,
                 poll_interval=0.02,
+                # This box has no GPUs; the default num_gpus=1 puts
+                # gpus_per_rank into the task description.
+                num_gpus=int(os.environ.get("ROME_STREAM_GPUS", 0)),
             )
         ],
     )
@@ -96,26 +108,43 @@ async def run():
         await manager.start()
 
         # -- streams under contention: 4 replicas, one shared dictionary ----
-        request_ids = manager.stream.submit_batch([f"p{i}" for i in range(40)])
-        got = await settle(
-            lambda: len(manager.stream.get_outputs(consume=False)) == 40, timeout=90
+        n_req = int(os.environ.get("ROME_STREAM_REQUESTS", 40))
+        request_ids = manager.stream.submit_batch([f"p{i}" for i in range(n_req)])
+
+        # Wait for the requests to be claimed *first*. Reading results while
+        # replicas are still popping requests means scanning a dictionary that
+        # is being deleted from, and Dragon's keys() silently truncates under
+        # that -- so a complete result set reads as a partial one. Once the
+        # request queue is empty nothing pops, and the scan is exact.
+        drained = await settle(lambda: manager.stream.pending() == 0, timeout=120)
+        got = drained and await settle(
+            lambda: len(manager.stream.get_outputs(consume=False)) == n_req, timeout=120
         )
         records = manager.stream.get_outputs()
 
         def every_request_answered_exactly_once():
-            assert got, f"only {len(records)}/40 results arrived"
-            assert len(records) == 40, len(records)
+            statuses = {t.index: t.status.name for t in manager.stream.stream_tasks}
+            assert drained, (f"requests never drained "
+                             f"({manager.stream.pending()} left), streams={statuses}")
+            assert got, f"only {len(records)}/{n_req} results arrived"
+            assert len(records) == n_req, len(records)
             returned = [r["request_id"] for r in records]
-            assert len(set(returned)) == 40, "a request was answered twice"
+            assert len(set(returned)) == n_req, "a request was answered twice"
             assert set(returned) == set(request_ids), "result ids do not match requests"
 
         def work_reached_several_replicas():
             replicas = {r["stream_index"] for r in records}
+            n_streams = len(manager.stream.stream_tasks)
+            if n_streams < 2:
+                # The backend caps concurrent long-lived tasks; on a small
+                # allocation there is only one replica to spread over.
+                assert replicas == {0}, replicas
+                return
             assert len(replicas) > 1, f"only replica {replicas} did any work"
 
         def outputs_are_distinct():
             results = [r["result"] for r in records]
-            assert len(set(results)) == 40, "a stream echoed a cached result"
+            assert len(set(results)) == n_req, "a stream echoed a cached result"
 
         check("every request answered exactly once", every_request_answered_exactly_once)
         check("work spread over replicas", work_reached_several_replicas)
