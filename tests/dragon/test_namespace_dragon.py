@@ -13,7 +13,14 @@ on, and that is a deliberately short list: single-key get/set/delete, a
 from those, so if they hold here the rest follows.
 """
 
+import os
 import sys
+
+# `dragon -s` puts this script's directory on sys.path, and the Dragon
+# execution backend re-runs the script from a different working directory, so
+# neither cwd nor sys.path[0] can be relied on to find the package.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import traceback
 
 FAILURES = []

@@ -16,8 +16,15 @@ concurrency assumptions hold against a real distributed dictionary:
 Always follow a Dragon run with ``dragon-cleanup-deprecated``.
 """
 
-import asyncio
+import os
 import sys
+
+# `dragon -s` puts this script's directory on sys.path, and the Dragon
+# execution backend re-runs the script from a different working directory, so
+# neither cwd nor sys.path[0] can be relied on to find the package.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+import asyncio
 import tempfile
 import threading
 import traceback
@@ -47,16 +54,20 @@ async def settle(predicate, timeout=60.0, interval=0.05):
 
 async def run():
     from dragon.data.ddict import DDict
-    from radical.asyncflow import LocalExecutionBackend, WorkflowEngine
+    from radical.asyncflow import WorkflowEngine
+    from rhapsody.backends import DragonExecutionBackendV3
 
     import rome
     from rome.dummy import DummyTrainer, dummy_infer, dummy_load
 
-    backend = await LocalExecutionBackend(ThreadPoolExecutor(max_workers=16))
+    backend = await DragonExecutionBackendV3(
+        {"results_ddict_mem": int(os.environ.get("ROME_RESULTS_MEM", 512 * 1024 ** 2))}
+    )
     flow = await WorkflowEngine.create(backend=backend)
 
     # Shared with a "host workflow" key, to prove ROME-A stays in its namespace.
-    ddict = DDict(managers_per_node=1, n_nodes=1, total_mem=(1024 ** 3))
+    ddict = DDict(managers_per_node=1, n_nodes=1,
+                  total_mem=int(os.environ.get("ROME_DDICT_MEM", 256 * 1024 ** 2)))
     ddict["host_workflow_state"] = {"campaign": "smoke"}
 
     checkpoint_dir = tempfile.mkdtemp(prefix="rome_dragon_")
