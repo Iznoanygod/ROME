@@ -12,8 +12,10 @@
 #   3  AF output tree    whether predictions are kept per pass or overwritten
 #   4  chains in a PDB   monomer or complex -> n_prot, filters, weighting alphas
 #   5  MPNN seqs         how sequences map to designs -> iter_seqs, num_seqs
-#   6  run config        max_passes, num_seqs, thresholds actually used
-#   7  timing            pass duration -> how long a training round may take
+#   6  timing            pass duration -> how long a training round may take
+#
+# It deliberately does not read the run scripts: these campaigns predate ROME-A,
+# so their configuration says nothing about how an adaptive run is set up.
 
 set -uo pipefail
 ROOT="${1:?usage: impress_campaign_probe.sh <campaign-dir>}"
@@ -97,25 +99,7 @@ else
   echo "no seqs/ directory found"
 fi
 
-section "6. RUN CONFIG"
-echo "-- scripts/ --"
-ls -la scripts 2>/dev/null | head -20
-echo
-echo "-- any run/sbatch script, in full --"
-for f in $(find . -maxdepth 2 \( -name '*.slurm' -o -name '*.sbatch' -o -name 'run_*.py' -o -name '*.sh' \) 2>/dev/null | head -3); do
-  echo "----- $f -----"
-  head -80 "$f"
-done
-echo
-echo "-- slurm .out: head and tail --"
-for f in $(ls -1 slurm-*.out 2>/dev/null | head -1); do
-  echo "----- $f ($(stat -c%s "$f") bytes) -----"
-  head -60 "$f"
-  echo "   ...[snip]..."
-  tail -40 "$f"
-done
-
-section "7. TIMING — how long is a pass?"
+section "6. TIMING — how long is a pass?"
 echo "Sets how long ROME-A has to finish a training round between passes."
 find . -name 'af_stats_*.csv' -printf '%TY-%Tm-%Td %TH:%TM:%TS  %f\n' 2>/dev/null \
   | sort | head -60
