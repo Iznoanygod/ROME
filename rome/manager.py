@@ -44,15 +44,36 @@ from rome.utils import MODEL_PATH_KEY, MODEL_VERSION_KEY, Namespace
 #: never collides with the workflow's own state.
 ROME_NS = "rome"
 
+#: Defaults for a DDict ROME-A allocates itself. Dragon's own default
+#: ``total_mem`` is 3 MiB; a campaign corpus of a few thousand records plus the
+#: stream queues goes past that, and the failure mode is an allocation error
+#: deep in a manager rather than anything ROME-A can explain, so ask for room.
+DEFAULT_DDICT_KWARGS: Dict[str, Any] = {
+    "managers_per_node": 1,
+    "n_nodes": 1,
+    "total_mem": 1024 ** 3,
+}
+
 
 class Manager:
     """Manager class for handling tasks and data in the ROME framework.
 
     Parameters
     ----------
-    asyncflow : WorkflowEngine
-        The workflow engine ROME-A submits its tasks to. ROME-A never creates
-        its own execution backend — it borrows the host workflow's.
+    asyncflow : WorkflowEngine, optional
+        The engine ROME-A submits its tasks to. Pass the host workflow's — for
+        an IMPRESS campaign that is ``impress_manager.flow``, available once the
+        manager has started — and ROME-A's rounds and streams are scheduled
+        against the same allocation as the campaign's own tasks.
+
+        Leave it ``None`` and ROME-A builds its own engine at :meth:`start` and
+        shuts it down at :meth:`stop`. That is the right choice when ROME-A
+        should manage its own tasks independently of the host, or when the host
+        creates its engine internally and does not hand one out.
+    backend : optional
+        Execution backend for the engine ROME-A builds for itself. Ignored when
+        ``asyncflow`` is given. When both are omitted, asyncflow falls back to a
+        local backend.
     data_config : DataConfig, optional
         How scored outputs become a dataset, and how much data a training round
         needs.
@@ -65,7 +86,14 @@ class Manager:
         entirely by workflows that only want the data + training halves.
     ddict : DDict, optional
         Share the host workflow's dictionary instead of allocating one. ROME-A
-        namespaces all of its keys, so sharing is safe.
+        namespaces all of its keys, so sharing is safe, and passing the DDict
+        object into a task is all it takes to reach it from another node —
+        Dragon attaches the receiving process automatically.
+    ddict_kwargs : dict, optional
+        Passed to ``DDict(...)`` when ROME-A allocates its own. Worth setting
+        on a real campaign: Dragon's default ``total_mem`` is 3 MiB, which a
+        corpus of a few thousand records will exhaust, so ROME-A asks for
+        :data:`DEFAULT_DDICT_KWARGS` instead.
     auto_reload_streams : bool
         Wire published checkpoints to stream reloads (default). Turn off if the
         workflow would rather decide when inference switches models.
@@ -73,16 +101,25 @@ class Manager:
 
     def __init__(
         self,
-        asyncflow: WorkflowEngine,
+        asyncflow: Optional[WorkflowEngine] = None,
         *,
+        backend: Any = None,
         data_config: Optional[DataConfig] = None,
         trainer_config: Optional[TrainerConfig] = None,
         stream_configs: Optional[List[StreamConfig]] = None,
         ddict: Optional[DDict] = None,
+        ddict_kwargs: Optional[Dict[str, Any]] = None,
         auto_reload_streams: bool = True,
     ):
         self.asyncflow = asyncflow
-        self.manager_ddict = ddict if ddict is not None else DDict()
+        self.backend = backend
+        #: True when ROME-A built the engine and is therefore responsible for
+        #: shutting it down. An engine handed in belongs to the host workflow.
+        self._owns_asyncflow = False
+        if ddict is not None:
+            self.manager_ddict = ddict
+        else:
+            self.manager_ddict = DDict(**{**DEFAULT_DDICT_KWARGS, **(ddict_kwargs or {})})
         self.ns = Namespace(self.manager_ddict, f"{ROME_NS}|")
         self.stop_event = Event()
         self.auto_reload_streams = auto_reload_streams
@@ -112,6 +149,7 @@ class Manager:
         if stream_configs is not None:
             self._stream_configs = list(stream_configs)
 
+        await self._ensure_asyncflow()
         self.stop_event.clear()
 
         if self.auto_reload_streams:
@@ -131,6 +169,22 @@ class Manager:
         self._started = True
         return self
 
+    async def _ensure_asyncflow(self) -> None:
+        """Build an engine if the workflow did not hand one over.
+
+        Deferred to :meth:`start` rather than done in ``__init__`` because
+        ``WorkflowEngine.create`` is a coroutine, and because a host that means
+        to share its own engine may not have started it yet when ROME-A is
+        constructed.
+        """
+        if self.asyncflow is not None:
+            return
+        self.asyncflow = await WorkflowEngine.create(backend=self.backend)
+        self._owns_asyncflow = True
+        # The sub-managers were constructed before the engine existed.
+        self.trainer.asyncflow = self.asyncflow
+        self.stream.asyncflow = self.asyncflow
+
     async def stop(self, wait: bool = True, timeout: float = 300.0) -> None:
         """Stop the ROME manager.
 
@@ -141,6 +195,15 @@ class Manager:
         self.stop_event.set()
         await self.trainer.stop(wait_for_stop=wait, timeout=timeout)
         await self.stream.stop(wait_for_stop=wait, timeout=timeout)
+        # Each stream group owns a dictionary; the manager's teardown is where
+        # they are released, after the streams have finished draining.
+        self.stream.close()
+        if self._owns_asyncflow and self.asyncflow is not None:
+            # Only an engine ROME-A built is ROME-A's to shut down; the host
+            # workflow's is still running its own tasks.
+            await self.asyncflow.shutdown()
+            self.asyncflow = None
+            self._owns_asyncflow = False
         self._started = False
 
     async def __aenter__(self) -> "Manager":

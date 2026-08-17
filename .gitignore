@@ -5,3 +5,13 @@ build/
 dist/
 .pytest_cache/
 rome_checkpoints/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.pdf
+*.synctex.gz
+
+# Dragon leaves DDict orchestrator files in the cwd
+ddict_orc_*

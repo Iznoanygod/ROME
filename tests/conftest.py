@@ -13,6 +13,7 @@ real code paths without a Dragon runtime.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 import types
@@ -42,6 +43,25 @@ class _StubConfig:
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+
+def _dragon_runtime_active() -> bool:
+    """Whether we are running under ``dragon``.
+
+    Dragon's Python API is importable without the runtime, but every object it
+    creates asserts on launch parameters that only exist inside a Dragon
+    launch. So "is dragon installed" is the wrong question — installing it and
+    then running plain ``pytest`` would fail on ``Launch parameter not
+    initialized: GS_CD``. This asks whether the runtime is actually up.
+    """
+    return bool(os.environ.get("DRAGON_GS_CD"))
+
+
+def _force_module(name: str) -> types.ModuleType:
+    """Replace ``name`` in ``sys.modules`` with a fresh empty module."""
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
 
 
 def _ensure_module(name: str) -> types.ModuleType:
@@ -99,18 +119,34 @@ def _stub_if_missing() -> None:
         radical.asyncflow = af
         af.WorkflowEngine = type("WorkflowEngine", (), {})
 
-    try:
-        import dragon  # noqa: F401
-    except ImportError:
-        _ensure_module("dragon")
-        data = _ensure_module("dragon.data")
-        ddict = _ensure_module("dragon.data.ddict")
-        # A DDict is a mapping shared across nodes; in-process, a dict is a
-        # faithful stand-in for everything ROME-A asks of it.
-        ddict.DDict = dict
+    if not _dragon_runtime_active():
+        # Force the stubs even when dragon is importable: outside a Dragon
+        # launch its objects cannot be constructed at all.
+        _force_module("dragon")
+        data = _force_module("dragon.data")
+        ddict = _force_module("dragon.data.ddict")
+
+        class _StubDDict(dict):
+            """In-process stand-in for a Dragon DDict.
+
+            A plain ``dict`` is faithful for the mapping operations ROME-A uses,
+            but it is not constructor-compatible: ``dict(total_mem=...)`` would
+            turn the sizing arguments into *entries*, which then show up in
+            every prefix scan. So the kwargs are accepted and dropped, and
+            ``destroy`` exists because the stream manager releases the
+            dictionaries it allocates.
+            """
+
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+
+            def destroy(self):
+                self.clear()
+
+        ddict.DDict = _StubDDict
         data.ddict = ddict
-        native = _ensure_module("dragon.native")
-        event = _ensure_module("dragon.native.event")
+        native = _force_module("dragon.native")
+        event = _force_module("dragon.native.event")
         event.Event = threading.Event
         native.event = event
 

@@ -92,9 +92,14 @@ it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME-A:
 
 ROME-A schedules nothing itself. Training rounds and stream tasks are submitted
 to the `radical.asyncflow` `WorkflowEngine` the host workflow passes in, with
-per-task resources given as an asyncflow `task_description`. Shared state lives
-in a Dragon `DDict`; pass your own via `Manager(..., ddict=...)` and ROME-A will
-namespace its keys under `rome|` so nothing collides with the workflow's own.
+per-task resources given as an asyncflow `task_description`.
+
+Shared state lives in Dragon `DDict`s. The manager's holds the corpus and the
+published checkpoint — pass your own via `Manager(..., ddict=...)` and ROME-A
+namespaces its keys under `rome|` so nothing collides with the workflow's own.
+Each stream group gets a **separate** dictionary for its request and result
+queues, so the cost of a replica's poll does not grow with the corpus; supply
+`StreamConfig.ddict` to use one you already own.
 
 ### Use case: IMPRESS-R
 
@@ -106,6 +111,40 @@ the pipeline. IMPRESS itself runs unchanged.
 
 See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
+
+`examples/impress_r/adaptive_rome.py` is IMPRESS-R itself: a real
+`ImpressManager` driving a real pipeline, with ROME-A attached through
+`adaptive_fn` — designs go in, improved MPNN weights come back out for the next
+pass, and IMPRESS's `run()` never mentions ROME-A. `docs/impress.md` covers
+installing IMPRESS from the `archive/ipdps_pdz_usecase` branch and both halves
+of the integration.
+
+`docs/proteinmpnn_training.md` covers what foundry's ProteinMPNN trainer
+actually consumes — it is a dataframe of structure-file paths, not sequences —
+plus the required columns, what IMPRESS has to emit, and the checkpoint
+lifecycle across rounds.
+
+### Trying it without a model
+
+`rome.dummy` ships a trainer that sleeps instead of fine-tuning and an
+inference stream that emits `model example output [<uuid>]`. Everything else in
+the run is real — tasks are placed by the workflow engine, state crosses the
+DDict, and the checkpoint is a file that is genuinely written and read back —
+so it is the right first thing to run on a new backend or allocation:
+
+```bash
+dragon examples/agnostic/dummy_loop.py
+```
+
+```
+  v0 | model example output [7af1236d-dad6-4300-a8c3-a00d53a4ca65]
+round 0: corpus   4 (4 fresh) | model v0 | WAITING
+  ...
+  v3 | model example output [76ad7d76-0aef-4de1-a0fd-de6ba02390ad]
+round 6: corpus  28 (4 fresh) | model v3 | WAITING
+```
+
+The version climbs while the stream keeps serving; it is never restarted.
 
 ## Layout
 
@@ -122,9 +161,28 @@ examples/        ROME-A adoption examples
 protein_generation/  IMPRESS pipeline scripts
 ```
 
+## Running it on a cluster
+
+`docs/delta.md` is the end-to-end setup: environment, installing Dragon,
+ROME-A and IMPRESS, a smoke-test ladder that proves one layer at a time, a
+Slurm script, and what still needs swapping in for a real campaign.
+
 ## Tests
 
 ```bash
 pip install -e '.[test]'
 pytest -m fast      # unit + mocked integration, no GPUs
 ```
+
+Dragon-specific checks are scripts, not pytest modules, because the Dragon
+launcher runs a script rather than a test session:
+
+```bash
+dragon -s tests/dragon/test_namespace_dragon.py   # DDict/Event primitives
+dragon -s tests/dragon/test_manager_dragon.py     # the whole loop, 4 replicas
+dragon-cleanup-deprecated                         # after every Dragon run
+```
+
+`docs/dragon.md` records what running on Dragon turned up — notably that a
+DDict client handle cannot be shared across threads — and the one known
+scaling limit.

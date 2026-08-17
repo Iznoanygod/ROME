@@ -1,0 +1,46 @@
+% Minimal driver used to typecheck design.tex on its own.
+% Replace with the venue's class/preamble when assembling the full paper; the
+% preamble below is the exact set of packages and macros design.tex needs.
+\documentclass{article}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+
+\lstdefinestyle{rome}{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{black!55}\itshape,
+  stringstyle=\color{green!40!black},
+  showstringspaces=false,
+  breaklines=true,
+  columns=fullflexible,
+  frame=none,
+  xleftmargin=1em,
+}
+
+\title{ROME-A: Workflow-Agnostic Model Enhancement}
+\date{}
+
+\begin{document}
+\maketitle
+
+% Labels design.tex cross-references; supplied here so the driver resolves them.
+\section{Related Work}\label{sec:related}
+\section{Use Case: IMPRESS-R}\label{sec:impressr}
+
+\input{design}
+
+\begin{thebibliography}{9}
+\bibitem{dragon} Dragon: a distributed run-time for HPC and AI workflows.
+\bibitem{asyncflow} RADICAL AsyncFlow: asynchronous workflow execution.
+\end{thebibliography}
+
+\end{document}
