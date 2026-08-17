@@ -335,15 +335,21 @@ class ProteinMPNNTrainer(TrainTask):
 
     def validate(self, dataset: Any) -> None:
         super().validate(dataset)
-        missing = [f for f in REQUIRED_FIELDS if f not in (dataset[0] or {})]
-        if missing:
-            raise ValueError(
-                f"ProteinMPNN training needs {', '.join(REQUIRED_FIELDS)} on every "
-                f"record; the corpus is missing {', '.join(missing)}. 'path' must "
-                "point at the structure file that IS the training example (for "
-                "IMPRESS-R, the structure prediction of the designed sequence) — "
-                "see docs/proteinmpnn_training.md."
-            )
+        # Every record, not just the first: a corpus whose first design is
+        # well-formed but whose tenth lacks 'path' would otherwise pass here and
+        # KeyError deep inside build_training_dataframe — after a round has
+        # already been placed on an allocation. Fail on the manager instead.
+        for index, record in enumerate(dataset):
+            missing = [f for f in REQUIRED_FIELDS if f not in (record or {})]
+            if missing:
+                raise ValueError(
+                    f"ProteinMPNN training needs {', '.join(REQUIRED_FIELDS)} on "
+                    f"every record; corpus record {index} is missing "
+                    f"{', '.join(missing)}. 'path' must point at the structure "
+                    "file that IS the training example (for IMPRESS-R, the "
+                    "structure prediction of the designed sequence) — see "
+                    "docs/proteinmpnn_training.md."
+                )
 
     # -- corpus materialization --------------------------------------------
 
