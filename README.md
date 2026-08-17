@@ -117,12 +117,17 @@ the pipeline. IMPRESS itself runs unchanged.
 See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
 
-`examples/impress_r/adaptive_rome.py` is IMPRESS-R itself: a real
-`ImpressManager` driving a real pipeline, with ROME-A attached through
-`adaptive_fn` — designs go in, improved MPNN weights come back out for the next
-pass, and IMPRESS's `run()` never mentions ROME-A. `docs/impress.md` covers
-installing IMPRESS from the `archive/ipdps_pdz_usecase` branch and both halves
-of the integration.
+`examples/impress_r/dummy_adaptive_rome.py` is the smallest version of the
+integration: IMPRESS's own dummy adaptive example with **two lines of ROME-A**
+added inside `adaptive_fn` — `add_training_data` to contribute a generation's
+designs, `get_current_model` to collect the improved model — and the
+`DummyTrainer` running a round on its own once enough designs arrive. Start here.
+
+`examples/impress_r/adaptive_rome.py` is the same seam on a real
+protein-binding pipeline: a real `ImpressManager`, designs in, improved MPNN
+weights out for the next pass, and IMPRESS's `run()` never mentioning ROME-A.
+`docs/impress.md` covers installing IMPRESS from the `archive/ipdps_pdz_usecase`
+branch and both halves of the integration.
 
 `docs/proteinmpnn_training.md` covers the trainer: it fine-tunes the **original
 `dauparas/ProteinMPNN`** — the same implementation IMPRESS runs — on the
