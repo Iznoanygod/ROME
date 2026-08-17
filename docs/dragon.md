@@ -229,37 +229,55 @@ done.
 - **ROME-A stays in its namespace.** Every key it writes is prefixed `rome|`,
   asserted by the Dragon test against a shared dictionary.
 
-### A busy service task wedges dispatch — on a small node only
+### A running service task stops later tasks from resolving
 
-**Retracted as a general finding.** `tests/dragon/test_busy_service_blocks_dragon.py`
-shows a service task that continuously scans a DDict and pops what it finds
-stopping every later task from being dispatched:
+`tests/dragon/test_service_blocks_results_dragon.py`, in plain Dragon, rhapsody
+and asyncflow with no ROME-A involved:
 
 ```
-q1 (no service)      RAN
-q2 (idle service)    RAN
-q3 (busy service)    BLOCKED      <- on a 4-CPU sandbox
+scenario        ran     resolved
+no service      True    True
+idle service    True    False     <- ran, future never resolved
+busy service    False   False
 ```
 
-On an NCSA Delta GPU node the same script prints `q3 ... RAN`. So this is a
-starvation artifact of a small allocation — a service polling at 20 Hz on a box
-with about two usable task slots — and **not** the reason a training round
-stalls while streams are running. Keep the script as an allocation smoke test;
-do not treat it as a Dragon bug.
+Once a service task is running, an ordinary task submitted afterwards **executes
+but its future never resolves**. An idle service that only sleeps is enough; it
+is not about load. (The `busy service` row not running at all is a separate
+small-node capacity effect — on a Delta GPU node it runs.)
 
-**What is still unexplained.** On Delta, with 6/6 concurrent service tasks
-available and this script passing, `test_manager_dragon.py` still reports no
-training round completed. Ruled out, each with its own probe:
+The distinction that matters is between two things an earlier version of this
+script conflated:
 
-* *Capacity.* Reproduces with free slots.
-* *Picklability.* The round's body pickles to an identical 2006 bytes with and
-  without a stream running.
-* *Event-loop starvation.* Worst measured lag 4 ms, a corpus scan 0.16 s, and an
-  ordinary task submitted from the same driver still runs.
-* *Poll frequency.* 0.05 s to 5 s changes nothing.
-* *Dataset size.* 100 records train fine with no stream; 8 do not train with one.
-* *The trainer itself.* Alone on this backend it publishes `v1` in ~2 seconds.
+* **ran** — the body executed, observed through a side effect
+* **resolved** — the driver's future for it completed
 
-The training assertion in `test_manager_dragon.py` now reports trainer status
-and the corpus counts, so the next run on a real allocation should say which
-link broke rather than only that no round completed.
+Measuring only "ran" is why a first pass on a real allocation looked healthy.
+
+**This is what stalls a ROME-A training round while streams are up.** Streams are
+service tasks, so a round submitted after them runs to completion — it writes its
+checkpoint to disk — and the driver's `await` never returns:
+
+```
+status=RUNNING total=100 consumed=0 unconsumed=100 min_samples=8 ready=True
+version=0 checkpoint=None | disk={'dummy/v1/checkpoint.json': 72} | future=PENDING
+```
+
+`disk=` proves the body ran; `future=PENDING` proves the result never came back.
+The driver creates the round's output directory before submitting, but only the
+task body writes a file into it, so that file is the evidence.
+
+Everything else was eliminated first, each with its own probe: capacity (it
+reproduces with free slots, on an allocation running 6/6 concurrent services),
+picklability (the round's body pickles to an identical 2006 bytes either way),
+event-loop starvation (worst lag 4 ms, corpus scan 0.16 s, ordinary tasks from
+the same driver still run), poll frequency (0.05 s to 5 s changes nothing),
+dataset size (100 records train fine with no stream, 8 do not train with one),
+and the trainer itself (alone on this backend it publishes `v1` in ~2 s).
+
+**Consequences.** Streams and training cannot currently run in the same job on
+this backend. The IMPRESS-R integration does not use ROME-A's streams —
+inference is IMPRESS's own MPNN and folding tasks — so a campaign is unaffected
+and the data plus training path works. This looks like a rhapsody/asyncflow
+result-delivery bug rather than something ROME-A can fix from the outside, and
+the script above is small enough to hand upstream.

@@ -45,6 +45,32 @@ def check(name, fn):
         print(f"ok    {name}")
 
 
+
+def _checkpoint_tree(root):
+    """What a round actually left on disk, as {relative path: bytes}."""
+    out = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                out[os.path.relpath(full, root)] = os.path.getsize(full)
+            except OSError:
+                pass
+    return out or "<no files>"
+
+
+def _future_state(fut):
+    if fut is None:
+        return "<never submitted>"
+    try:
+        if not fut.done():
+            return "PENDING"
+        exc = fut.exception()
+        return f"RAISED {type(exc).__name__}: {exc}" if exc else f"done -> {fut.result()!r}"
+    except Exception as ex:  # cancelled, or not an asyncio future
+        return f"<uninspectable: {type(ex).__name__}>"
+
+
 async def settle(predicate, timeout=60.0, interval=0.25):
     """Wait on wall-clock time, not iteration count.
 
@@ -191,7 +217,13 @@ async def run():
                 f"min_samples={data.config.min_samples} "
                 f"ready={data.ready_to_train()} "
                 f"version={manager.model_version} "
-                f"checkpoint={manager.get_current_model()!r}"
+                f"checkpoint={manager.get_current_model()!r} | "
+                # The driver creates the round's output directory before
+                # submitting, but only the task body writes a file into it. So
+                # files on disk mean the round ran and its result never came
+                # back; an empty tree means it never ran at all.
+                f"disk={_checkpoint_tree(checkpoint_dir)} | "
+                f"future={_future_state(manager.trainer._round_fut)}"
             )
             assert manager.get_current_model(), "no checkpoint was published"
             assert trainer.rounds, "the trainer task never ran"

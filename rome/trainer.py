@@ -145,6 +145,8 @@ class Trainer:
         self._rounds_completed = 0
         self._last_error: Optional[str] = None
         self._in_flight = False
+        #: Future for the round currently in flight, for diagnostics only.
+        self._round_fut = None
         self._extra_callbacks: List[Callable[[str, int], None]] = []
 
     # -- lifecycle ----------------------------------------------------------
@@ -290,9 +292,12 @@ class Trainer:
             return await asyncio.to_thread(task.train, dataset, output_dir, **call_kwargs)
 
         train_entry.__name__ = f"rome_train_{task.name}"
-        return await submit_task(
+        # Kept only so a stalled round can be inspected: a round that never
+        # returns leaves no other handle on the submission.
+        self._round_fut = submit_task(
             self.asyncflow, train_entry, task_description=description
         )
+        return await self._round_fut
 
     def _publish(self, checkpoint: str, version: int, sample_count: int) -> None:
         """Make a finished checkpoint visible to the rest of the workflow.
