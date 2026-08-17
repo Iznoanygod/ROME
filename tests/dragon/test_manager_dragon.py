@@ -179,7 +179,20 @@ async def run():
         reached = await settle(lambda: manager.model_version >= 1, timeout=90)
 
         def training_fired_and_published():
-            assert reached, "no training round completed"
+            # A bare "no round completed" says nothing about which link broke,
+            # and the counts here are prefix scans that Dragon can truncate --
+            # so report them rather than leave it to guesswork.
+            data = manager.data
+            assert reached, (
+                "no training round completed | "
+                f"status={manager.get_training_status().name} "
+                f"total={data.total_count} consumed={data.consumed_count} "
+                f"unconsumed={data.unconsumed_count} "
+                f"min_samples={data.config.min_samples} "
+                f"ready={data.ready_to_train()} "
+                f"version={manager.model_version} "
+                f"checkpoint={manager.get_current_model()!r}"
+            )
             assert manager.get_current_model(), "no checkpoint was published"
             assert trainer.rounds, "the trainer task never ran"
 

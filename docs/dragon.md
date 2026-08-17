@@ -228,3 +228,50 @@ done.
   workflow's dictionary instead.
 - **ROME-A stays in its namespace.** Every key it writes is prefixed `rome|`,
   asserted by the Dragon test against a shared dictionary.
+
+### A busy service task wedges the backend's dispatch
+
+Found while getting ROME-A's streams onto `DragonExecutionBackendV3`, and it is
+not a ROME-A bug — `tests/dragon/test_busy_service_blocks_dragon.py` reproduces
+it in about thirty lines of plain Dragon, rhapsody and asyncflow:
+
+```
+q1 (no service)      RAN
+q2 (idle service)    RAN
+q3 (busy service)    BLOCKED
+```
+
+A service task that only sleeps blocks nothing. A service task that
+continuously scans a DDict and pops what it finds — the shape of *any*
+claim-by-pop worker — stops every subsequently submitted task from ever being
+dispatched.
+
+**What it looks like in ROME-A.** Inference streams are exactly that shape, so
+with streams running a training round is submitted, `TrainerStatus` goes to
+`RUNNING`, and the task never starts. Ruled out along the way, each with its own
+probe:
+
+* *Capacity.* It reproduces with free slots — on an allocation running 6/6
+  concurrent service tasks.
+* *Picklability.* The round's body pickles to an identical 2006 bytes with and
+  without a stream running.
+* *Event-loop starvation.* Worst measured lag is 4 ms and a corpus scan takes
+  0.16 s; an ordinary task submitted from the same driver still runs.
+* *Poll frequency.* Raising the stream's `poll_interval` from 0.05 s to 5 s
+  changes nothing.
+* *Dataset size.* 100 records train fine with no stream; 8 records do not train
+  with one.
+
+The trainer is healthy in isolation: alone on this backend it publishes `v1` in
+about two seconds.
+
+**Living with it.** The IMPRESS-R integration does not use ROME-A's streams —
+inference is IMPRESS's own MPNN and folding tasks — so a campaign is unaffected,
+and the data plus training path works on this backend. What is blocked is using
+streams and training in the same run.
+
+The likely fix is to stop scanning altogether. `Namespace.keys()` filters
+client-side, so every replica's poll streams the whole dictionary; a Dragon
+native queue would give the claim path a blocking `get` with no scan, which
+would also sidestep the silent-truncation bug above. That is a change to the
+stream layer, not yet made.
