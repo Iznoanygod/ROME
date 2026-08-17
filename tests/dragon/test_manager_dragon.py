@@ -228,8 +228,13 @@ async def run():
                 f"future={_future_state(manager.trainer._round_fut)} "
                 f"waited={train_wait}s"
             )
-            assert manager.get_current_model(), "no checkpoint was published"
-            assert trainer.rounds, "the trainer task never ran"
+            published = manager.get_current_model()
+            assert published, "no checkpoint was published"
+            # NOT trainer.rounds: the round runs in another process, so what it
+            # records on the trainer object never comes back to the driver.
+            # The checkpoint on disk is the only evidence that crosses.
+            assert _checkpoint_tree(checkpoint_dir) != "<no files>", \
+                f"published {published!r} but nothing was written under it"
 
         check("training fired and published", training_fired_and_published)
 

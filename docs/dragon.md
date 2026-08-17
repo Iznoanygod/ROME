@@ -229,55 +229,75 @@ done.
 - **ROME-A stays in its namespace.** Every key it writes is prefixed `rome|`,
   asserted by the Dragon test against a shared dictionary.
 
-### A running service task stops later tasks from resolving
+### A never-completing task blocks result delivery for everything behind it
 
-`tests/dragon/test_service_blocks_results_dragon.py`, in plain Dragon, rhapsody
-and asyncflow with no ROME-A involved:
+The last thing standing between ROME-A and a working loop on the multi-process
+Dragon backend, and it is a backend defect rather than anything ROME-A does.
 
-```
-scenario        ran     resolved
-no service      True    True
-idle service    True    False     <- ran, future never resolved
-busy service    False   False
-```
-
-Once a service task is running, an ordinary task submitted afterwards **executes
-but its future never resolves**. An idle service that only sleeps is enough; it
-is not about load. (The `busy service` row not running at all is a separate
-small-node capacity effect — on a Delta GPU node it runs.)
-
-The distinction that matters is between two things an earlier version of this
-script conflated:
-
-* **ran** — the body executed, observed through a side effect
-* **resolved** — the driver's future for it completed
-
-Measuring only "ran" is why a first pass on a real allocation looked healthy.
-
-**This is what stalls a ROME-A training round while streams are up.** Streams are
-service tasks, so a round submitted after them runs to completion — it writes its
-checkpoint to disk — and the driver's `await` never returns:
+**The measurement.** With a stream running and a training round finished:
 
 ```
-status=RUNNING total=100 consumed=0 unconsumed=100 min_samples=8 ready=True
-version=0 checkpoint=None | disk={'dummy/v1/checkpoint.json': 72} | future=PENDING
+manager(0)['0-0'] -> STILL BLOCKED after 20s   # the stream service, still running
+manager(0)['0-1'] -> returned in 0.12s         # the finished round's result
 ```
 
-`disk=` proves the body ran; `future=PENDING` proves the result never came back.
-The driver creates the round's output directory before submitting, but only the
-task body writes a file into it, so that file is the evidence.
+Dragon pre-registers a running task's result key, so *reading* that key blocks
+until a value arrives instead of raising `KeyError`. rhapsody's monitor sweeps
+its outstanding tasks in insertion order:
 
-Everything else was eliminated first, each with its own probe: capacity (it
-reproduces with free slots, on an allocation running 6/6 concurrent services),
-picklability (the round's body pickles to an identical 2006 bytes either way),
-event-loop starvation (worst lag 4 ms, corpus scan 0.16 s, ordinary tasks from
-the same driver still run), poll frequency (0.05 s to 5 s changes nothing),
-dataset size (100 records train fine with no stream, 8 do not train with one),
-and the trainer itself (alone on this backend it publishes `v1` in ~2 s).
+```python
+for tuid in list(self._monitored_batches.keys()):
+    ...
+    try:
+        result, tb, raised, stdout, stderr = self.batch.results_ddict.manager(idx)[tuid]
+    except KeyError:
+        continue
+```
 
-**Consequences.** Streams and training cannot currently run in the same job on
-this backend. The IMPRESS-R integration does not use ROME-A's streams —
-inference is IMPRESS's own MPNN and folding tasks — so a campaign is unaffected
-and the data plus training path works. This looks like a rhapsody/asyncflow
-result-delivery bug rather than something ROME-A can fix from the outside, and
-the script above is small enough to hand upstream.
+A ROME-A stream is a service task that never completes, so its key is
+permanently pending, its read never returns, and the sweep never reaches
+anything behind it. The monitor thread stays *alive* the whole time, which is
+what made this hard to see.
+
+**What it looked like.** The round ran and its checkpoint was on disk, while the
+driver's future stayed pending forever and `TrainerStatus` never left `RUNNING`:
+
+```
+status=RUNNING total=100 unconsumed=100 ready=True version=0 checkpoint=None
+disk={'dummy/v1/checkpoint.json': 72} | future=PENDING waited=180.0s
+```
+
+Everything else was eliminated first, each with its own probe: capacity, task
+picklability, event-loop starvation (4 ms worst lag), stream poll frequency,
+dataset size, the trainer in isolation, which shard the result landed in (the
+right one), the stored value's shape (a clean 5-tuple), whether the monitor
+thread was alive (it was), and whether missing-key reads are slow (they are not
+— 0.4 ms; it is specifically a *pending* key that blocks).
+
+**The workaround.** `TrainerConfig.result_fallback_seconds` (default 60s). A
+round whose checkpoint is already on disk is treated as finished if the backend
+has still not delivered its result after the grace period. The round itself was
+never the problem — only the notification — so the checkpoint is the sounder
+signal. Set it to `None` to disable and wait on the backend forever.
+
+With that in place the whole loop passes on `DragonExecutionBackendV3`:
+
+```
+ok    every request answered exactly once
+ok    work spread over replicas
+ok    outputs are distinct
+ok    concurrent writers lose nothing
+ok    training fired and published
+ok    streams swapped onto the checkpoint
+ok    host workflow keys untouched
+ROME-A works on Dragon
+```
+
+`tests/dragon/test_service_blocks_results_dragon.py` is the reduced repro, worth
+sending upstream: the fix belongs in the monitor, which should test for a key's
+presence before reading it, or skip tasks it knows cannot have completed.
+
+**A related trap.** `d[missing]` on a whole DDict hangs; `d.manager(i)[missing]`
+raises `KeyError` promptly. Prefer the manager-scoped form when a miss is
+expected.
+
