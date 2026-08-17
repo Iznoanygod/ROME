@@ -293,9 +293,30 @@ ok    host workflow keys untouched
 ROME-A works on Dragon
 ```
 
-`tests/dragon/test_service_blocks_results_dragon.py` is the reduced repro, worth
-sending upstream: the fix belongs in the monitor, which should test for a key's
-presence before reading it, or skip tasks it knows cannot have completed.
+**Confirmed where.** The *stall* is confirmed on both a 4-CPU node and an NCSA
+Delta GPU node — on Delta the round wrote `dummy/v1/checkpoint.json` while its
+future was still pending after 180s. The *mechanism* above (the blocked read on
+a pending key) has only been measured on the small node:
+`tests/dragon/test_service_blocks_results_dragon.py` reduces it to plain Dragon
+and rhapsody, and on Delta every task in it resolves. So the reduced repro is
+not proof for a large allocation, and whether the blocked-key read is the cause
+there is open.
+
+`tests/dragon/test_result_delivery_dragon.py` answers that on whatever
+allocation it is run on: it reproduces the stall (`ROME_FALLBACK=none`) and then
+reports which shard the result reached, the value's shape, monitor-thread
+liveness, and how long it takes to read a still-running task's key. If that read
+returns quickly on your allocation, the mechanism there is something else and
+the output says what.
+
+If the mechanism does hold, the fix belongs upstream in the monitor, which
+should test for a key's presence before reading it, or skip tasks it knows
+cannot have completed.
+
+**Telling a rescue from a normal completion.** The fallback logs
+`publishing from disk` at WARNING when it fires. If a run passes without that
+line, the backend delivered the result normally and the fallback was not
+involved.
 
 **A related trap.** `d[missing]` on a whole DDict hangs; `d.manager(i)[missing]`
 raises `KeyError` promptly. Prefer the manager-scoped form when a miss is
