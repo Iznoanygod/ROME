@@ -185,3 +185,71 @@ let ROME-A build its own. Both paths are covered by
 * **`PipelineSetup(kwargs={...})`** passes arbitrary configuration through to
   the pipeline constructor, which is how the example threads `base_path`
   through.
+
+
+---
+
+## What the real campaign data says
+
+From the `IMPRESS data` Drive folder (`prod_in_70` inputs, `prod/p1-p16` results
+of a 70-pipeline PDZ run). These correct several assumptions the example was
+built on.
+
+### Inputs: 70 pipelines, one structure each
+
+`prod_in_70/` holds `p1_in` … `p70_in`, matching IMPRESS's `{name}_in`
+convention. Each contains exactly **one PDB** — `p1_in/2ejy.pdb`, 129 KB. So a
+campaign is 70 independent pipelines, each seeded with a single PDZ complex, not
+a pool of backbones per pipeline.
+
+### One design per pass, not a batch
+
+The score CSVs are **87–90 bytes**: a header and a single data row.
+
+```
+ID,avg_plddt,ptm,avg_pae
+8oep.pdb,97.2927451133728,0.7814092636108398,5.4314351081848145
+```
+
+`examples/impress_r/adaptive_rome.py` assumes 6–8 designs per pass. The real
+campaign contributes **one record per (pipeline, pass)**. Across 70 pipelines and
+8 passes that is a few hundred records for a whole campaign, so `min_samples`
+has to be set against that budget, not against a per-pass batch.
+
+### The design ID is the input structure, and its path is reused
+
+`ID` is the input PDB name (`8oep.pdb`), the same value every pass. Two
+consequences for the wiring:
+
+* **`output_path_af/{design}.pdb` is overwritten each pass.** A corpus record
+  that stores that path points at a file whose contents change under it, so by
+  training time it no longer holds the structure that was scored. The
+  contribution step has to copy the prediction to a pass-qualified location
+  before recording it. Deduplicating on sequence does not save this — the path
+  is the training example.
+* **Clustering by `pipeline.name` splits one structure across many keys.**
+  Sub-pipelines chain their suffixes (`p9_sub1_sub2_sub3`, up to the
+  `MAX_SUB_PIPELINES = 3` cap), so the same `8oep` appears under several
+  pipeline names and would be weighted as several clusters. Cluster on the `ID`
+  column instead.
+
+### pLDDT does not discriminate; pTM and pAE do
+
+Two passes of the same sub-pipeline:
+
+| pass | pLDDT | pTM | pAE | `impress_corpus_filter(80, 0.80, 5.0)` |
+|---|---|---|---|---|
+| 3 | 97.26 | 0.819 | 4.91 | accept |
+| 8 | 97.29 | 0.781 | 5.43 | **reject** (pTM < 0.80, pAE > 5.0) |
+
+pLDDT sits at ~97 throughout — nowhere near the 80 threshold, which is therefore
+inert. The binding constraints are pTM and pAE, and they sit *right on* the
+default thresholds, so the accept rate is genuinely sensitive to them.
+
+That also breaks the example's sampling: it uses `score_key="pLDDT"` with
+`sampling="top_k"`, and ranking by a value that is ~97 for everything is close
+to ranking at random. Rank by pAE (lower is better) or pTM instead.
+
+The trajectory is also the degradation IMPRESS is built to detect — pTM falling
+and pAE rising from pass 3 to pass 8 — which is consistent with this pipeline
+having exhausted its three sub-pipeline migrations.
