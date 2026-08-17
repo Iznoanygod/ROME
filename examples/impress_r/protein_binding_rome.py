@@ -62,6 +62,44 @@ MPNN_REPO = os.environ.get(
 )
 
 
+class ProteinBindingPipelineR(ProteinBindingPipeline):
+    """The real pipeline, with best-model selection made backend-agnostic.
+
+    IMPRESS selects AlphaFold's best model in the AF task's ``post_exec`` —
+    copying ``dimer_models/{target}/*ranked_0*.pdb`` into ``best_models/`` and
+    the ranking JSON into ``best_ptm/``. ``post_exec`` is a RADICAL-Pilot
+    feature; on LocalExecutionBackend or the Dragon backend it is ignored, so
+    ``best_models`` stays empty and ``plddt_extract_pipeline.py`` writes a
+    header-only CSV. (That is the empty-``af_stats`` failure — see
+    ``scripts/populate_best_models.py`` to recover an already-run campaign.)
+
+    This folds those copies into the AF task's own shell command with ``&&``, so
+    they run on the same node on whatever backend, right after AlphaFold — no
+    ``post_exec`` needed.
+    """
+
+    def register_pipeline_tasks(self) -> None:
+        super().register_pipeline_tasks()          # registers s1..s5 as-is
+
+        @self.auto_register_task()
+        async def s4(target_fasta, task_description={"gpus_per_rank": 1}):  # noqa: B006
+            pred = os.path.join(self.output_path, "af", "prediction")
+            models = os.path.join(pred, "dimer_models", target_fasta)
+            best_pdb = os.path.join(pred, "best_models", f"{target_fasta}.pdb")
+            best_json = os.path.join(pred, "best_ptm", f"{target_fasta}.json")
+            mpnn_pdb = os.path.join(self.output_path, "mpnn",
+                                    f"job_{self.passes}", f"{target_fasta}.pdb")
+            return (
+                f"/bin/bash {self.base_path}/af2_multimer_reduced.sh "
+                f"{self.output_path}/af/fasta/ {target_fasta}.fa "
+                f"{pred}/dimer_models/ "
+                # best-model selection, inline (post_exec's job, backend-agnostic)
+                f"&& cp {models}/*ranked_0*.pdb {best_pdb} "
+                f"&& cp {models}/*ranking_debug*.json {best_json} "
+                f"&& cp {models}/*ranked_0*.pdb {mpnn_pdb}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # IMPRESS's migration criterion — verbatim from run_protein_binding.py.
 # ---------------------------------------------------------------------------
@@ -235,7 +273,7 @@ async def impress_protein_bind() -> None:
         await impress.start(pipeline_setups=[
             PipelineSetup(
                 name="p1",
-                type=ProteinBindingPipeline,
+                type=ProteinBindingPipelineR,
                 adaptive_fn=make_adaptive_decision(manager, os.path.join(workdir, "designs")),
             )
         ])

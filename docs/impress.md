@@ -186,6 +186,40 @@ let ROME-A build its own. Both paths are covered by
   the pipeline constructor, which is how the example threads `base_path`
   through.
 
+### `post_exec` only runs on RadicalExecutionBackend — the empty `af_stats` trap
+
+The protein-binding pipeline selects AlphaFold's best model in the AF task's
+**`post_exec`**:
+
+```python
+"post_exec": [
+    f"cp {models_path}/*ranked_0*.pdb {best_model_pdb}",       # -> best_models/
+    f"cp {models_path}/*ranking_debug*.json {best_ptm_json}",  # -> best_ptm/
+    f"cp {models_path}/*ranked_0*.pdb {mpnn_pdb}",
+]
+```
+
+`pre_exec`/`post_exec`/`output_staging` are **RADICAL-Pilot** task-description
+features. The upstream `run_protein_binding.py` runs on `RadicalExecutionBackend`,
+where they execute. On `LocalExecutionBackend` or the Dragon backend — the only
+options on current asyncflow, since `RadicalExecutionBackend` is 0.2.0 only —
+**`post_exec` is silently ignored**. So AlphaFold fills `dimer_models/` but
+nothing copies the ranked model into `best_models/`/`best_ptm/`, and
+`plddt_extract_pipeline.py` — whose outer loop is `for files in
+os.listdir(best_models)` — writes a **header-only `af_stats` CSV**. Three
+symptoms, one cause: `dimer_models` populated, `best_models`/`best_ptm` empty,
+`af_stats` empty.
+
+Two remedies:
+
+* **Already-run campaign:** `scripts/populate_best_models.py` does the copies
+  from an existing `dimer_models/`, so you can re-run the extractor without
+  re-running AlphaFold. It also prints a target's contents when there is no
+  `ranked_0` PDB, which distinguishes an AlphaFold run from a Boltz/other one.
+* **New runs:** `examples/impress_r/protein_binding_rome.py` uses
+  `ProteinBindingPipelineR`, which folds the copies into the AF task's own shell
+  command with `&&` so they run on any backend, right after AlphaFold.
+
 
 ---
 
