@@ -191,8 +191,10 @@ let ROME-A build its own. Both paths are covered by
 
 ## What the real campaign data says
 
-From the `IMPRESS data` Drive folder (`prod_in_70` inputs, `prod/p1-p16` results
-of a 70-pipeline PDZ run). These correct several assumptions the example was
+From a 70-target PDZ binder campaign: the `IMPRESS data` Drive folder
+(`prod_in_70` inputs, `prod/p1-p16` results), plus two files measured directly —
+all 176 `af_stats_*.csv` from the `p1-p16` group, and `sequences_indexed.csv`
+covering all 70 targets. These correct several assumptions the example was
 built on.
 
 ### Inputs: 70 pipelines, one structure each
@@ -212,44 +214,126 @@ ID,avg_plddt,ptm,avg_pae
 ```
 
 `examples/impress_r/adaptive_rome.py` assumes 6–8 designs per pass. The real
-campaign contributes **one record per (pipeline, pass)**. Across 70 pipelines and
-8 passes that is a few hundred records for a whole campaign, so `min_samples`
-has to be set against that budget, not against a per-pass batch.
+campaign contributes **one record per (pipeline, pass)**. Every one of the 176
+CSVs in `p1-p16` has exactly one data row.
 
-### The design ID is the input structure, and its path is reused
+That fixes the corpus budget, and it is small:
 
-`ID` is the input PDB name (`8oep.pdb`), the same value every pass. Two
-consequences for the wiring:
+| | |
+|---|---|
+| records per target, whole campaign | **11** (uniform across all 16) |
+| records for the 16-target group | **176** |
+| records per pass, 16 targets | 16 – 32 (median 21) |
+| extrapolated to 70 targets | ~770 total, ~70–140 per pass |
 
-* **`output_path_af/{design}.pdb` is overwritten each pass.** A corpus record
-  that stores that path points at a file whose contents change under it, so by
-  training time it no longer holds the structure that was scored. The
-  contribution step has to copy the prediction to a pass-qualified location
-  before recording it. Deduplicating on sequence does not save this — the path
-  is the training example.
-* **Clustering by `pipeline.name` splits one structure across many keys.**
-  Sub-pipelines chain their suffixes (`p9_sub1_sub2_sub3`, up to the
-  `MAX_SUB_PIPELINES = 3` cap), so the same `8oep` appears under several
-  pipeline names and would be weighted as several clusters. Cluster on the `ID`
-  column instead.
+So `min_samples` has to be set against a per-pass yield in the tens, not the
+hundreds. Combined with the filter below (~32% admission), **`min_samples=24`**
+gives roughly one training round per pass at 70 targets. The `min_samples=64` in
+the README's snippet would fire about twice in a whole campaign.
 
-### pLDDT does not discriminate; pTM and pAE do
+### Migration is uniform, and it is what makes 11 records out of 8 passes
 
-Two passes of the same sub-pipeline:
+Each target's lineage is exactly four nodes deep — `p1`, `p1_sub1`,
+`p1_sub1_sub2`, `p1_sub1_sub2_sub3` — for all 70 targets, hitting the
+`MAX_SUB_PIPELINES = 3` cap every time. In all 48 handoffs in the `p1-p16`
+group, **the child's first pass is the parent's last pass**, not the one after:
+a migration re-runs the pass it was triggered on. The three duplicated passes
+are what turn 8 passes into 11 records.
 
-| pass | pLDDT | pTM | pAE | `impress_corpus_filter(80, 0.80, 5.0)` |
-|---|---|---|---|---|
-| 3 | 97.26 | 0.819 | 4.91 | accept |
-| 8 | 97.29 | 0.781 | 5.43 | **reject** (pTM < 0.80, pAE > 5.0) |
+```
+p11                 p1:0.85 p2:0.87 p3:0.90 p4:0.91 p5:0.93 p6:0.87
+p11_sub1                                                    p6:0.84
+p11_sub1_sub2                                               p6:0.84
+p11_sub1_sub2_sub3                                          p6:0.67 p7:0.76 p8:0.69
+```
+<sub>pTM by pass. Three migrations fire on pass 6 alone, once the parent's pTM turns down.</sub>
 
-pLDDT sits at ~97 throughout — nowhere near the 80 threshold, which is therefore
-inert. The binding constraints are pTM and pAE, and they sit *right on* the
-default thresholds, so the accept rate is genuinely sensitive to them.
+24 of 28 handoffs happen on a pass where pTM fell against the previous pass, so
+migration is tracking exactly the degradation ROME-A is meant to fix. Two
+consequences for the wiring: the contribution step will see the same
+`(target, pass)` more than once and must key on the full `model_id`, and a
+lineage that has spent all three migrations has no move left except a better
+model.
 
+### The predictor is Boltz, and the prediction path is not what the example assumes
+
+`af_pipeline_outputs_multi` is a legacy name. `sequences_indexed.csv` gives the
+real path of every scored structure, and it is Boltz output nested well below
+`output_path_af`:
+
+```
+{group}/protein_binding/af_pipeline_outputs_multi/{model_id}
+    /af/prediction/dimer_models/{target}
+    /boltz_results_{target}/predictions/{target}/{target}_model_0.pdb
+```
+
+All 280 rows follow this template. Three things fall out of it.
+
+**It is a `dimer_model` — the structure is a complex, not a monomer.** This
+settles the open question: `n_prot = 2`, `avg_pae` is an interface signal and
+worth ranking on, and the AF3-style weighting should count two protein chains.
+
+**It is keyed by `model_id`, not by pass — so it is overwritten.** `p10_sub1`
+runs passes 2 through 6 and writes all five predictions to one
+`2pdz_model_0.pdb`. A corpus record storing that path points at a file whose
+contents change under it, so by training time it no longer holds the structure
+that was scored. **The contribution step has to copy the prediction to a
+pass-qualified location before recording it.** Deduplicating on sequence does not
+save this — the path *is* the training example. This is the one finding that
+forces a code change rather than a retune.
+
+**`ID` is the input PDB name** (`8oep.pdb`), identical every pass, so it cannot
+identify a record. Cluster on `ID` for weighting — sub-pipelines chain their
+suffixes and would otherwise split one structure across four clusters — but key
+records on `(model_id, pass)`.
+
+### `sequences_indexed.csv` is an analysis artifact, not a pipeline output
+
+Worth being explicit, because it is the most convenient-looking file in the
+campaign. Its `kmer_cos_dist` and `aa_entropy` columns are post-hoc diversity
+metrics and its `confidence` is Boltz's own score — it matches `ptm` in none of
+the 64 `p1-p16` rows. It carries **one row per `model_id` with no pass column**,
+so it cannot be joined to `af_stats_*` per pass; it is the final state of each
+lineage node, 280 rows for 70 targets.
+
+For ROME-A it is still useful for two things: the designed sequences are 76–108
+residues (median 91), and **all 280 are distinct**, so the corpus needs no
+sequence-level deduplication.
+
+### The filter thresholds were wrong, and pLDDT does not discriminate
+
+All 176 records of the `p1-p16` group:
+
+| | min | p25 | median | p75 | max |
+|---|---|---|---|---|---|
+| `avg_plddt` | 87.96 | 92.30 | **95.73** | 96.99 | 97.83 |
+| `ptm` | 0.669 | 0.840 | **0.905** | 0.928 | 0.956 |
+| `avg_pae` | 1.99 | 3.14 | **3.81** | 4.82 | 8.01 |
+
+The shipped defaults, `impress_corpus_filter(80, 0.80, 5.0)`, **admit 146 of 176
+records — 83%.** Clause by clause: `pLDDT >= 80` admits 100%, `pTM >= 0.80`
+admits 89%, `pAE <= 5.0` admits 84%.
+
+This was the mistake, and it was a conceptual one rather than an arithmetic one.
+The thresholds were taken from IMPRESS's own keep/drop rule, on the reasoning
+that IMPRESS already knows what a good design is. But everything that survives
+into the score CSVs has *already* cleared that rule — the filter is being applied
+downstream of itself. Reusing it selects nothing and fine-tunes ProteinMPNN on
+the campaign's own median output, which is the failure mode ROME-A exists to
+avoid.
+
+Retuned defaults, now `impress_corpus_filter(93.0, 0.90, 4.0)`:
+
+| thresholds | admits |
+|---|---|
+| 80 / 0.80 / 5.0 (old) | 146 (83%) |
+| 90 / 0.85 / 4.5 | 105 (60%) |
+| **93 / 0.90 / 4.0** | **56 (32%)** |
+| 95 / 0.90 / 4.0 | 41 (23%) |
+| 97 / 0.90 / 3.0 | 3 (2%) |
+
+pLDDT still barely discriminates — it never drops below 88, so even the raised
+93 only removes the bottom quartile — and the pTM/pAE clauses do the real work.
 That also breaks the example's sampling: it uses `score_key="pLDDT"` with
-`sampling="top_k"`, and ranking by a value that is ~97 for everything is close
-to ranking at random. Rank by pAE (lower is better) or pTM instead.
-
-The trajectory is also the degradation IMPRESS is built to detect — pTM falling
-and pAE rising from pass 3 to pass 8 — which is consistent with this pipeline
-having exhausted its three sub-pipeline migrations.
+`sampling="top_k"`, and ranking on a value spanning 88–98 with a median of 95.7
+is close to ranking at random. **Rank by pAE (lower is better) or pTM.**

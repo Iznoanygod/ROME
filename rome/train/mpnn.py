@@ -559,17 +559,35 @@ def create_noam_scheduler(
 
 
 def impress_corpus_filter(
-    min_pLDDT: float = 80.0,
-    min_pTM: float = 0.8,
-    max_pAE: float = 5.0,
+    min_pLDDT: float = 93.0,
+    min_pTM: float = 0.90,
+    max_pAE: float = 4.0,
 ) -> Callable[[Dict[str, Any]], bool]:
     """Build the IMPRESS admission predicate for :class:`~rome.data.DataConfig`.
 
-    IMPRESS-R only trains on designs the campaign is confident in, and those are
-    exactly the thresholds IMPRESS already uses to decide a design is worth
-    keeping::
+    IMPRESS-R only trains on the designs the campaign is most confident in::
 
-        DataConfig(min_samples=64, filter_func=impress_corpus_filter())
+        DataConfig(min_samples=24, filter_func=impress_corpus_filter())
+
+    The defaults are calibrated against a real 16-target PDZ campaign — 176
+    scored designs over 8 passes — rather than against IMPRESS's own keep/drop
+    thresholds, because those are far too permissive to *select* anything:
+
+    ================  =======  =======  ===============
+    clause            median   admits
+    ================  =======  =======  ===============
+    ``pLDDT >= 80``   95.7     100%     inert
+    ``pTM >= 0.80``   0.905     89%
+    ``pAE <= 5.0``    3.81      84%
+    all three                   83%     barely a filter
+    ================  =======  =======  ===============
+
+    Everything IMPRESS keeps clears its own bar by construction, so reusing that
+    bar admits the whole corpus and fine-tunes ProteinMPNN on its own mediocre
+    output. These thresholds instead take the campaign's top third (32%), which
+    at ~16 records per pass per 16 targets is roughly one training round per
+    pass. Note that ``pLDDT`` alone still discriminates poorly — it never falls
+    below 88 — so it is the ``pTM``/``pAE`` clauses doing the real work.
     """
 
     def _passes(record: Dict[str, Any]) -> bool:

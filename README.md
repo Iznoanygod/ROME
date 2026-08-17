@@ -36,7 +36,7 @@ from rome.train.mpnn import ProteinMPNNTrainer, impress_corpus_filter
 manager = rome.Manager(
     asyncflow,                                  # your existing WorkflowEngine
     data_config=rome.DataConfig(
-        min_samples=64,
+        min_samples=24,                         # a campaign yields tens per pass
         filter_func=impress_corpus_filter(),    # only train on confident designs
     ),
     trainer_config=rome.TrainerConfig(trainer=ProteinMPNNTrainer()),

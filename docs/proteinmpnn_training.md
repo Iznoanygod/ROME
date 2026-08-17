@@ -166,11 +166,15 @@ Most of this IMPRESS already has. Three things need attention:
   the learning rate very low; hold out a fixed validation set from an earlier
   campaign and watch sequence recovery per round; or ask IPD for the split
   dataframes.
-- **Binder designs are multi-chain.** If a design is a binder against a target,
-  the AF2 output is a complex: `n_prot == 2`, the stock `n_prot == 1` filter
-  rejects it, and IMPRESS's pAE is an *interface* pAE. Monomer and binder
-  campaigns need different filters and different weighting alphas. Worth deciding
-  which IMPRESS-R is targeting before building the shard writer.
+- **Binder designs are multi-chain — and the PDZ campaign is one.** Settled from
+  the campaign's real prediction paths, which run through
+  `.../af/prediction/dimer_models/{target}/boltz_results_{target}/...`: the
+  structure is a **dimer**, so `n_prot == 2`, IMPRESS's `avg_pae` is an
+  *interface* pAE, and **the stock `n_prot == 1` filter rejects every example**.
+  That filter has to be relaxed to `n_prot == 2` and the weighting alphas set for
+  a two-chain complex before a shard writer will produce anything usable. Note
+  also that the predictor is **Boltz, not AlphaFold** — `af_pipeline_outputs_multi`
+  and `af_stats_*` are legacy names — so the pLDDT/pTM/pAE are Boltz's.
 - **The re-implementation is explicitly unstable.** foundry's README carries both
   an API-instability warning and a benchmarking warning ("please use the old
   repositories … until the API and public weights stabilize"). Pin a commit.
@@ -255,7 +259,13 @@ checkpoint exists to publish as soon as the round ends.
 
 ## 8. Open questions
 
-- Monomer designs or binders? Decides filters, `n_prot`, and weighting alphas (§5).
+- ~~Monomer designs or binders?~~ **Answered: binders.** The campaign predicts
+  dimers, so `n_prot == 2` and the stock filter must be relaxed (§5).
+- Corpus size is the binding constraint, not compute: a 70-target campaign yields
+  ~770 scored designs total and ~70–140 per pass, of which the retuned filter
+  admits about a third. A round therefore trains on **tens of examples**. That is
+  small enough that per-round epochs and learning rate matter more than
+  throughput, and small enough that the drift question below is sharper.
 - Option A or Option B pairing (§3)? B is free; A needs a threading step built.
 - Is there access to IPD's split dataframes for mixing in PDB data, or does
   IMPRESS-R accept pure self-training and measure the drift (§5)?
