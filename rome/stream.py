@@ -596,7 +596,12 @@ class Stream:
                 "tasks": len(tasks),
                 "status": [t.status.name for t in tasks],
                 "pending": sum(t.pending for t in tasks),
-                "model_version": max((t.local_version for t in tasks), default=0),
+                # The *published* version, read from shared state — authoritative
+                # and cross-process. A replica's own local_version lives in its
+                # task process and does not come back to the driver, so reading
+                # that would report 0 on a multi-process backend even while the
+                # replica is serving the latest checkpoint.
+                "model_version": int(self.ddict.get(MODEL_VERSION_KEY, 0)),
             }
         return out
 

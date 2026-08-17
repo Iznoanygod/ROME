@@ -145,6 +145,23 @@ ROME-A works on Dragon
 dragon -s examples/agnostic/dummy_loop.py && dragon-cleanup-deprecated
 ```
 
+That runs on `LocalExecutionBackend` (task bodies as threads). To exercise real
+multi-process placement — streams and a training round in separate processes,
+which is what a real allocation does — run the same example on the Dragon
+execution backend:
+
+```bash
+ROME_BACKEND=dragon ROME_STREAM_REPLICAS=1 ROME_GPUS=0 \
+  dragon -s examples/agnostic/dummy_loop.py && dragon-cleanup-deprecated
+```
+
+The version still climbs, but two things differ and both are backend facts, not
+ROME-A ones (see §6 and `docs/dragon.md`): keep `ROME_STREAM_REPLICAS` below the
+allocation's concurrent-task capacity so the round gets a slot, and the round's
+result is published *from disk* after a short grace because a stream service task
+blocks rhapsody's result delivery. On a real multi-node allocation raise the
+replica count and leave the fallback at its minutes-scale default.
+
 **(d) IMPRESS-R — real IMPRESS pipeline, real ROME-A, stubbed executables.**
 
 ```bash
