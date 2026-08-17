@@ -337,3 +337,36 @@ pLDDT still barely discriminates — it never drops below 88, so even the raised
 That also breaks the example's sampling: it uses `score_key="pLDDT"` with
 `sampling="top_k"`, and ranking on a value spanning 88–98 with a median of 95.7
 is close to ranking at random. **Rank by pAE (lower is better) or pTM.**
+
+### Timing: passes overlap, so there is no barrier to train at
+
+The `af_stats_*` mtimes date the whole `p1-p16` group. The 16-target, 8-pass
+campaign ran in **1 hour 49 minutes**, and successive passes *start* about
+**9 minutes** apart (median; the slowest is 29).
+
+But the passes are not a barrier. Each pass spans ~27 minutes wall clock while
+starting only 9 minutes after the one before, so at any moment three passes are
+in flight and pipeline A's pass 5 routinely finishes after pipeline B's pass 6
+has begun:
+
+```
+pass 3  |=========================|          22:04 -> 22:31
+pass 4       |=========================|     22:13 -> 22:41
+pass 5            |=========================|22:22 -> 22:50
+```
+
+Two consequences, and both favour the design ROME-A already has:
+
+* **Training cannot be scheduled "between passes"** — there is no such moment.
+  It has to be triggered by corpus size and run concurrently with the campaign,
+  which is what `min_samples` does.
+* **Checkpoint pickup is naturally staggered.** A pipeline calls
+  `get_current_model()` when it next starts a pass, so a round that finishes
+  mid-flight is picked up by whichever pipelines start next and by the rest on
+  their following pass. Nothing blocks and nothing needs synchronising — the
+  versioned publish handles it.
+
+For sizing: a round that finishes inside ~9 minutes lands in the immediately
+following pass. A longer round is not an error, it just reaches the campaign a
+pass or two later, and at 8 passes per campaign that is the real limit on how
+many rounds a campaign can benefit from.
