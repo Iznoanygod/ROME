@@ -76,7 +76,14 @@ class Manager:
     backend : optional
         Execution backend for the engine ROME-A builds for itself. Ignored when
         ``asyncflow`` is given. When both are omitted, asyncflow falls back to a
-        local backend.
+        **local, in-process** backend — fine for tests and CPU work, but wrong
+        for a GPU fine-tune: a training round then runs inside this driver
+        process, so the model's CUDA context stays resident for the whole
+        campaign instead of being freed when the round ends. Pass a
+        process-based backend (``DragonExecutionBackendV3`` on Delta, or a
+        ``ConcurrentExecutionBackend(ProcessPoolExecutor())``) so each round runs
+        in a task process that releases its VRAM on exit. See
+        ``examples/impress_r/run_protein_binding_rome.py``.
     data_config : DataConfig, optional
         How scored outputs become a dataset, and how much data a training round
         needs.

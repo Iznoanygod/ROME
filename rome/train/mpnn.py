@@ -481,6 +481,8 @@ class ProteinMPNNTrainer(TrainTask):
         ``chain_M``, and the loss is over ``mask * chain_M`` — resolved residues
         of the designed chain only, exactly as upstream.
         """
+        import gc
+
         import torch
 
         cfg = self.config
@@ -489,85 +491,102 @@ class ProteinMPNNTrainer(TrainTask):
 
         torch.manual_seed(cfg.seed)
         device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+        model = optimizer = None
 
-        # -- data: stage structures, parse, attach the chain designation -----
-        staged = stage_structures(records, os.path.join(output_dir, "structures"))
-        designation = build_chain_designation(
-            records, design_chains=cfg.design_chains,
-            context_chains=cfg.context_chains, chains_func=cfg.chains_func,
-        )
-
-        pdb_dicts = []
-        for name, path in staged.items():
-            for entry in parse_PDB(path):
-                present = [k[len("seq_chain_"):] for k in entry
-                           if k.startswith("seq_chain_")]
-                designed, context = designation[name]
-                designed = [c for c in designed if c in present]
-                # Anything present and not designed is context, so the peptide
-                # conditions the prediction even if it was not named explicitly.
-                context = [c for c in present if c not in designed]
-                entry["name"] = name
-                entry["masked_list"] = designed        # -> chain_M == 1 (scored)
-                entry["visible_list"] = context        # -> chain_M == 0 (context)
-                pdb_dicts.append(entry)
-
-        dataset = StructureDataset(pdb_dicts, verbose=False, truncate=None,
-                                   max_length=cfg.max_protein_length)
-        if len(dataset) == 0:
-            raise RuntimeError(
-                f"{self.name}: no structures survived parsing/length filtering "
-                f"(max_protein_length={cfg.max_protein_length}); nothing to train on."
+        try:
+            # -- data: stage structures, parse, attach the chain designation -
+            staged = stage_structures(records, os.path.join(output_dir, "structures"))
+            designation = build_chain_designation(
+                records, design_chains=cfg.design_chains,
+                context_chains=cfg.context_chains, chains_func=cfg.chains_func,
             )
-        loader = StructureLoader(dataset, batch_size=cfg.batch_tokens)
 
-        # -- model at the public v_48 architecture, resume prior weights -----
-        model = ProteinMPNN(
-            num_letters=21, node_features=cfg.hidden_dim,
-            edge_features=cfg.hidden_dim, hidden_dim=cfg.hidden_dim,
-            num_encoder_layers=cfg.num_layers, num_decoder_layers=cfg.num_layers,
-            k_neighbors=cfg.num_neighbors, augment_eps=cfg.backbone_noise,
-            dropout=cfg.dropout,
-        ).to(device)
+            pdb_dicts = []
+            for name, path in staged.items():
+                for entry in parse_PDB(path):
+                    present = [k[len("seq_chain_"):] for k in entry
+                               if k.startswith("seq_chain_")]
+                    designed, context = designation[name]
+                    designed = [c for c in designed if c in present]
+                    # Anything present and not designed is context, so the peptide
+                    # conditions the prediction even if it was not named explicitly.
+                    context = [c for c in present if c not in designed]
+                    entry["name"] = name
+                    entry["masked_list"] = designed    # -> chain_M == 1 (scored)
+                    entry["visible_list"] = context    # -> chain_M == 0 (context)
+                    pdb_dicts.append(entry)
 
-        resume = kwargs.get("model_path") or cfg.initial_weights
-        step = 0
-        if resume:
-            state = torch.load(resume, map_location=device)
-            model.load_state_dict(state["model_state_dict"] if "model_state_dict"
-                                  in state else state)
-            step = int(state.get("step", 0))    # continue the Noam schedule
-        model.train()
+            dataset = StructureDataset(pdb_dicts, verbose=False, truncate=None,
+                                       max_length=cfg.max_protein_length)
+            if len(dataset) == 0:
+                raise RuntimeError(
+                    f"{self.name}: no structures survived parsing/length filtering "
+                    f"(max_protein_length={cfg.max_protein_length}); nothing to train on."
+                )
+            loader = StructureLoader(dataset, batch_size=cfg.batch_tokens)
 
-        # The repo's Noam optimiser (get_std_opt hardcodes factor=2, warmup=4000;
-        # this honours the config while keeping the same shape).
-        optimizer = NoamOpt(
-            cfg.hidden_dim, cfg.learning_rate_factor, cfg.warmup_steps,
-            torch.optim.Adam(model.parameters(), lr=0.0, betas=(0.9, 0.98),
-                             eps=1e-9),
-            step,
-        )
+            # -- model at the public v_48 architecture, resume prior weights -
+            model = ProteinMPNN(
+                num_letters=21, node_features=cfg.hidden_dim,
+                edge_features=cfg.hidden_dim, hidden_dim=cfg.hidden_dim,
+                num_encoder_layers=cfg.num_layers, num_decoder_layers=cfg.num_layers,
+                k_neighbors=cfg.num_neighbors, augment_eps=cfg.backbone_noise,
+                dropout=cfg.dropout,
+            ).to(device)
 
-        # -- the fine-tuning loop (training/training.py, verbatim) -----------
-        for _epoch in range(cfg.max_epochs):
-            for batch in loader:
-                X, S, mask, lengths, chain_M, residue_idx, mask_self, \
-                    chain_encoding_all = featurize(batch, device)
-                optimizer.zero_grad()
-                mask_for_loss = mask * chain_M
-                log_probs = model(X, S, mask, chain_M, residue_idx,
-                                  chain_encoding_all)
-                _, loss = loss_smoothed(S, log_probs, mask_for_loss,
-                                        weight=cfg.label_smoothing)
-                loss.backward()
-                if cfg.gradient_norm and cfg.gradient_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                   cfg.gradient_norm)
-                optimizer.step()
-                step += 1
+            resume = kwargs.get("model_path") or cfg.initial_weights
+            step = 0
+            if resume:
+                state = torch.load(resume, map_location=device)
+                model.load_state_dict(state["model_state_dict"] if "model_state_dict"
+                                      in state else state)
+                step = int(state.get("step", 0))    # continue the Noam schedule
+            model.train()
 
-        return self._save_and_publish(model.state_dict(), output_dir,
-                                      optimizer=optimizer.optimizer, step=step)
+            # The repo's Noam optimiser (get_std_opt hardcodes factor=2,
+            # warmup=4000; this honours the config while keeping the same shape).
+            optimizer = NoamOpt(
+                cfg.hidden_dim, cfg.learning_rate_factor, cfg.warmup_steps,
+                torch.optim.Adam(model.parameters(), lr=0.0, betas=(0.9, 0.98),
+                                 eps=1e-9),
+                step,
+            )
+
+            # -- the fine-tuning loop (training/training.py, verbatim) -------
+            for _epoch in range(cfg.max_epochs):
+                for batch in loader:
+                    X, S, mask, lengths, chain_M, residue_idx, mask_self, \
+                        chain_encoding_all = featurize(batch, device)
+                    optimizer.zero_grad()
+                    mask_for_loss = mask * chain_M
+                    log_probs = model(X, S, mask, chain_M, residue_idx,
+                                      chain_encoding_all)
+                    _, loss = loss_smoothed(S, log_probs, mask_for_loss,
+                                            weight=cfg.label_smoothing)
+                    loss.backward()
+                    if cfg.gradient_norm and cfg.gradient_norm > 0.0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                       cfg.gradient_norm)
+                    optimizer.step()
+                    step += 1
+
+            # Snapshot the weights to CPU *before* the finally frees the GPU
+            # copy, so the checkpoint is written from host memory.
+            return self._save_and_publish(
+                {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                output_dir, optimizer=optimizer.optimizer, step=step,
+            )
+        finally:
+            # Release the GPU. Without this the model, optimizer state and CUDA
+            # context stay resident for the life of the *process* that ran the
+            # round — which, on an in-process backend, is the long-lived manager
+            # driver — so a finished round would keep holding VRAM. Dropping the
+            # references and emptying the caching allocator returns it to the
+            # device (and to `nvidia-smi`) as soon as the round ends.
+            del model, optimizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _save_and_publish(self, state_dict: Any, output_dir: str, *,
                           optimizer: Any = None, step: int = 0) -> str:

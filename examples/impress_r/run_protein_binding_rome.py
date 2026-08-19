@@ -171,6 +171,22 @@ def make_adaptive_decision(rome_manager: rome.Manager, stage_dir: str):
     return adaptive_decision
 
 
+async def _make_backend():
+    """An execution backend that runs tasks in their own processes.
+
+    ROME-A must *not* run its training rounds in the manager's own process: a
+    fine-tune loads ProteinMPNN onto the GPU, and an in-process (local) backend
+    would leave that CUDA context and the model resident in the long-lived
+    campaign driver for the whole run. A process-based backend runs each round
+    in a task process that exits when the round finishes, so the VRAM is
+    released. On Delta that is Dragon; ``ROME_BACKEND=concurrent`` selects the
+    ProcessPoolExecutor backend for a laptop/login-node smoke test.
+    """
+    if os.environ.get("ROME_BACKEND", "dragon").lower() == "concurrent":
+        return await ConcurrentExecutionBackend(ProcessPoolExecutor())
+    return await DragonExecutionBackendV3()
+
+
 def _build_trainer(checkpoint_dir: str):
     """ProteinMPNN trainer by default; a dummy sleeper for a wiring smoke test.
 
@@ -209,10 +225,15 @@ async def impress_protein_bind() -> None:
     """
     workdir = tempfile.mkdtemp(prefix='impress_r_')
 
-    # ROME-A with no engine passed in: it builds its own at start() and shuts it
-    # down at stop(), so its training runs independently of IMPRESS's tasks. A
-    # round fires once min_samples designs have accumulated from the campaign.
+    # ROME-A gets its OWN process-based backend, so its training rounds run as
+    # tasks in their own processes rather than inside this driver — otherwise a
+    # fine-tune's GPU allocation would stay resident in the campaign driver for
+    # the whole run (see _make_backend). It builds its engine on this backend at
+    # start() and shuts it down at stop(), so its training runs independently of
+    # IMPRESS's tasks. A round fires once min_samples designs have accumulated.
+    rome_backend = await _make_backend()
     rome_manager = rome.Manager(
+        backend=rome_backend,
         data_config=rome.DataConfig(
             # The campaign contributes ~one scored design per pipeline per pass,
             # so the corpus grows slowly; percentile_sampler needs no score
@@ -231,8 +252,7 @@ async def impress_protein_bind() -> None:
     )
     await rome_manager.start()
 
-    backend = await ConcurrentExecutionBackend(ProcessPoolExecutor())
-    #backend = await DragonExecutionBackendV3()
+    backend = await _make_backend()
     manager: ImpressManager = ImpressManager(execution_backend=backend)
 
     adaptive_fn = make_adaptive_decision(rome_manager, os.path.join(workdir, 'designs'))
