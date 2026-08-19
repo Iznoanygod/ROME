@@ -1,304 +1,312 @@
-"""IMPRESS-R: the real protein-binding use case with ROME-A folded in.
-
-This is IMPRESS's ``examples/protien_binding_usecase/run_protein_binding.py`` —
-the real ``ProteinBindingPipeline`` (MPNN -> AlphaFold -> pLDDT extraction, the
-pass loop, the score CSV, the degrade-and-migrate criterion) — with ROME-A added
-inside ``adaptive_decision`` and nowhere else:
-
-    contribute   manager.add_training_data(...)   this pass's scored design(s)
-    collect      manager.get_current_model()      confirm the improved model
-
-Once ``min_samples`` designs have accumulated from the campaign, ROME-A's
-training manager fine-tunes ProteinMPNN on its own and, with
-``publish_into_repo``, writes the new weights into the ProteinMPNN checkout's
-``vanilla_model_weights/`` — the file ``protein_mpnn_run.py`` loads by default.
-So the campaign's next MPNN pass runs the improved model with no change to the
-wrapper. IMPRESS's ``run()`` never mentions ROME-A.
-
-**Running on Delta.** This needs the same environment the campaign does — the
-ProteinMPNN checkout, PyRosetta, AlphaFold, and the three usecase scripts
-(``mpnn_wrapper.py``, ``af2_multimer_reduced.sh``, ``plddt_extract_pipeline.py``)
-plus the ``{name}_in/`` inputs in the working directory. Run it from the usecase
-directory:
-
-    cd .../IMPRESS/examples/protien_binding_usecase
-    ROME_MPNN_REPO=$WORK/ProteinMPNN \
-      dragon -s .../ROME/examples/impress_r/protein_binding_rome.py
-
-Environment:
-
-* ``ROME_MPNN_REPO`` — the dauparas/ProteinMPNN checkout IMPRESS runs (the ``-mpnn``
-  path). Required for a real training round.
-* ``ROME_TRAINER`` — ``mpnn`` (default) fine-tunes ProteinMPNN; ``dummy`` sleeps
-  and writes a placeholder, for a wiring smoke test with no torch or GPU.
-* ``ROME_IMPRESS_BACKEND`` — ``local`` (default; task subprocesses on this node,
-  right for a single-node interactive job) or ``dragon`` (multi-process/node).
-  The upstream script uses ``RadicalExecutionBackend``, which exists only in
-  asyncflow 0.2.0; on current asyncflow use one of these. See ``docs/impress.md``.
-
-The two open items from ``docs/impress.md`` apply to a production run: the
-prediction path is overwritten each pass (handled here — the hook copies each
-prediction aside before recording it), and the corpus filter must be calibrated
-on your own AF2 scores (``percentile_sampler`` needs no calibration and is used
-below).
-"""
-
 import asyncio
 import copy
-import csv
 import os
-import shutil
-import tempfile
-from typing import Any, Dict, Optional
 
-from impress import ImpressManager, PipelineSetup
-from impress.pipelines.protein_binding import ProteinBindingPipeline
+from .impress_pipeline import ImpressBasePipeline
 
-import rome
-from rome.train.mpnn import percentile_sampler
+TASK_PRE_EXEC = [
+    #"module load anaconda",
+    #"source activate base",
+    #(f"conda activate /anvil/scratch/{os.environ['USER']}/impress/ve.impress"),
+]
 
-MPNN_REPO = os.environ.get(
-    "ROME_MPNN_REPO", f"/anvil/scratch/{os.environ.get('USER', 'user')}/impress/ProteinMPNN"
-)
+MPNN_PATH = f"/work/nvme/bdyk/{os.environ['USER']}/ProteinMPNN"
 
 
-class ProteinBindingPipelineR(ProteinBindingPipeline):
-    """The real pipeline, with best-model selection made backend-agnostic.
+class ProteinBindingPipeline(ImpressBasePipeline):
+    def __init__(self, name, flow, configs=None, **kwargs):
+        # Execution metadata
+        if configs is None:
+            configs = {}
 
-    IMPRESS selects AlphaFold's best model in the AF task's ``post_exec`` —
-    copying ``dimer_models/{target}/*ranked_0*.pdb`` into ``best_models/`` and
-    the ranking JSON into ``best_ptm/``. ``post_exec`` is a RADICAL-Pilot
-    feature; on LocalExecutionBackend or the Dragon backend it is ignored, so
-    ``best_models`` stays empty and ``plddt_extract_pipeline.py`` writes a
-    header-only CSV. (That is the empty-``af_stats`` failure — see
-    ``scripts/populate_best_models.py`` to recover an already-run campaign.)
+        self.is_child: bool = kwargs.get("is_child", False)
+        self.passes = kwargs.get("passes", 1)
+        self.start_pass: int = kwargs.get("start_pass", 1)
+        self.step_id = kwargs.get("step_id", 1)
+        self.seq_rank = kwargs.get("seq_rank", 0)
+        self.num_seqs = kwargs.get("num_seqs", 10)
+        self.sub_order = kwargs.get("sub_order", 0)
+        self.max_passes = kwargs.get("max_passes", 4)
+        self.mpnn_path = kwargs.get("mpnn_path", MPNN_PATH)
 
-    This folds those copies into the AF task's own shell command with ``&&``, so
-    they run on the same node on whatever backend, right after AlphaFold — no
-    ``post_exec`` needed.
-    """
+        # Sequence and score state
+        self.current_scores = {}
+        self.iter_seqs = kwargs.get("iter_seqs", {})
+        self.previous_scores = kwargs.get("previous_score", {})
 
-    def register_pipeline_tasks(self) -> None:
-        super().register_pipeline_tasks()          # registers s1..s5 as-is
+        super().__init__(name, flow, **configs, **kwargs)
 
-        @self.auto_register_task()
-        async def s4(target_fasta, task_description={"gpus_per_rank": 1}):  # noqa: B006
-            pred = os.path.join(self.output_path, "af", "prediction")
-            models = os.path.join(pred, "dimer_models", target_fasta)
-            best_pdb = os.path.join(pred, "best_models", f"{target_fasta}.pdb")
-            best_json = os.path.join(pred, "best_ptm", f"{target_fasta}.json")
-            mpnn_pdb = os.path.join(self.output_path, "mpnn",
-                                    f"job_{self.passes}", f"{target_fasta}.pdb")
-            return (
-                f"/bin/bash {self.base_path}/af2_multimer_reduced.sh "
-                f"{self.output_path}/af/fasta/ {target_fasta}.fa "
-                f"{pred}/dimer_models/ "
-                # best-model selection, inline (post_exec's job, backend-agnostic)
-                f"&& cp {models}/*ranked_0*.pdb {best_pdb} "
-                f"&& cp {models}/*ranking_debug*.json {best_json} "
-                f"&& cp {models}/*ranked_0*.pdb {mpnn_pdb}"
-            )
+        # Input-related
+        self.fasta_list_2 = kwargs.get("fasta_list_2", [])
+        self.base_path = kwargs.get("base_path", os.getcwd())
+        self.input_path = os.path.join(self.base_path, f"{self.name}_in")
 
-
-# ---------------------------------------------------------------------------
-# IMPRESS's migration criterion — verbatim from run_protein_binding.py.
-# ---------------------------------------------------------------------------
-
-async def adaptive_criteria(current_score: float, previous_score: float) -> bool:
-    """Quality degraded (a binder's interface pAE rose) → migrate it."""
-    return current_score > previous_score
-
-
-# ---------------------------------------------------------------------------
-# The seam: ROME-A lives entirely inside adaptive_decision.
-# ---------------------------------------------------------------------------
-
-def make_adaptive_decision(manager: rome.Manager, stage_dir: str):
-    """IMPRESS's ``adaptive_decision`` with the two ROME-A hooks folded in.
-
-    ``manager`` and ``stage_dir`` are captured because ``adaptive_fn`` has a
-    fixed one-argument signature. Everything below the hooks is IMPRESS's own
-    migration logic, unchanged.
-    """
-    os.makedirs(stage_dir, exist_ok=True)
-
-    async def adaptive_decision(pipeline: ProteinBindingPipeline) -> Optional[Dict[str, Any]]:
-        MAX_SUB_PIPELINES: int = 3
-        sub_iter_seqs: Dict[str, str] = {}
-
-        stats = f"af_stats_{pipeline.name}_pass_{pipeline.passes}.csv"
-        accepted = 0
-        with open(stats) as fd:
-            for row in csv.DictReader(fd):          # ID, avg_plddt, ptm, avg_pae
-                protein = row["ID"].split(".")[0]
-                # IMPRESS's criterion is the interface pAE (last column).
-                pipeline.current_scores[protein] = float(row["avg_pae"])
-
-                # -- HOOK 1: contribute this design to ROME-A -----------------
-                # The prediction is keyed by pipeline, not by pass, and is
-                # deleted on migration, so copy it aside before recording it —
-                # otherwise the corpus points at a file whose contents change.
-                src = os.path.join(pipeline.output_path_af, f"{protein}.pdb")
-                if not os.path.exists(src):
-                    continue
-                staged = os.path.join(
-                    stage_dir, f"{pipeline.name}_pass{pipeline.passes}_{protein}.pdb"
-                )
-                shutil.copyfile(src, staged)
-                ranked = pipeline.iter_seqs.get(protein) or []
-                sequence = ranked[pipeline.seq_rank][0] if len(ranked) > pipeline.seq_rank else ""
-                uid = manager.add_training_data(
-                    path=staged,
-                    sequence=sequence,
-                    backbone_id=protein,               # cluster on the target
-                    pLDDT=float(row["avg_plddt"]),
-                    pTM=float(row["ptm"]),
-                    pAE=float(row["avg_pae"]),
-                    score=float(row["avg_plddt"]),
-                )
-                accepted += uid is not None
-
-        # -- HOOK 2: collect the improved model ---------------------------------
-        # The trainer publishes into the ProteinMPNN checkout's weights dir, so
-        # the next MPNN pass picks it up with no wrapper change; this just reports
-        # what ROME-A currently has.
-        weights = manager.get_current_model()
-        pipeline.logger.pipeline_log(
-            f"ROME-A: corpus {manager.data.total_count} (+{accepted} this pass) | "
-            f"{manager.get_training_status().name}"
-            + (f" | model {os.path.basename(weights)}" if weights else "")
+        # Output paths
+        self.output_path = os.path.join(
+            self.base_path, "af_pipeline_outputs_multi", self.name
+        )
+        self.output_path_mpnn = os.path.join(self.output_path, "mpnn")
+        self.output_path_af = os.path.join(
+            self.output_path, "af/prediction/best_models"
         )
 
-        # ---------------------------------------------------------------------
-        # IMPRESS's own migration logic below — verbatim.
-        # ---------------------------------------------------------------------
+        # might have to do outside of initialization, so new pipelines
+        # do not run this can be declared directly as argument
+        for file_name in os.listdir(self.input_path):
+            self.fasta_list_2.append(file_name)
+        self.set_up_new_pipeline_dirs(name)
 
-        if not pipeline.previous_scores:
-            pipeline.logger.pipeline_log("Saving current scores as previous and returning")
-            pipeline.previous_scores = copy.deepcopy(pipeline.current_scores)
-            return
+    def set_up_new_pipeline_dirs(self, new_pipeline_name):
+        base_output = os.path.join(
+            self.base_path, "af_pipeline_outputs_multi", new_pipeline_name
+        )
+        input_dir = os.path.join(self.base_path, f"{new_pipeline_name}_in")
 
-        sub_iter_seqs = {}
-        for protein, curr_score in pipeline.current_scores.items():
-            if protein not in pipeline.iter_seqs:
-                continue
-            decision = await adaptive_criteria(curr_score, pipeline.previous_scores[protein])
-            pipeline.logger.pipeline_log(f"Adaptive descision: {decision}")
-            if decision:
-                sub_iter_seqs[protein] = pipeline.iter_seqs.pop(protein)
+        if os.path.isdir(base_output):
+            return  # already exists, nothing to do
 
-        if sub_iter_seqs and pipeline.sub_order < MAX_SUB_PIPELINES:
-            new_name: str = f"{pipeline.name}_sub{pipeline.sub_order + 1}"
-            pipeline.set_up_new_pipeline_dirs(new_name)
+        # all directories to create
+        subdirs = [
+            "af/fasta",
+            "af/prediction",
+            "af/prediction/best_models",
+            "af/prediction/best_ptm",
+            "af/prediction/dimer_models",
+            "af/prediction/logs",
+            "mpnn",
+            *[f"mpnn/job_{i}" for i in range(1, 6)],
+        ]
 
-            for protein in sub_iter_seqs:
-                src = f"{pipeline.output_path_af}/{protein}.pdb"
-                dst = f"{pipeline.base_path}/{new_name}_in/{protein}.pdb"
-                shutil.copyfile(src, dst)
+        paths_to_create = [input_dir, base_output] + [
+            os.path.join(base_output, subdir) for subdir in subdirs
+        ]
 
-            new_config = {
-                "name": new_name,
-                "type": type(pipeline),
-                "adaptive_fn": make_adaptive_decision(manager, stage_dir),
-                "config": {
-                    "is_child": True,
-                    "start_pass": pipeline.passes,
-                    "passes": pipeline.passes,
-                    "iter_seqs": sub_iter_seqs,
-                    "seq_rank": pipeline.seq_rank + 1,
-                    "sub_order": pipeline.sub_order + 1,
-                    "previous_scores": copy.deepcopy(pipeline.previous_scores),
-                },
-            }
-            pipeline.submit_child_pipeline_request(new_config)
-            pipeline.finalize(sub_iter_seqs)
-            if not pipeline.fasta_list_2:
-                pipeline.kill_parent = True
-        else:
-            pipeline.previous_scores = copy.deepcopy(pipeline.current_scores)
+        for path in paths_to_create:
+            os.makedirs(path, exist_ok=True)
 
-    return adaptive_decision
+    def register_pipeline_tasks(self):
+        """Register all pipeline tasks"""
 
+        @self.auto_register_task(capture_stdio=True)  # MPNN
+        async def s1(task_description={"gpus_per_rank": 1}):  # noqa: B006
+            mpnn_script = os.path.join(self.base_path, "mpnn_wrapper.py")
+            output_dir = os.path.join(self.output_path_mpnn, f"job_{self.passes}")
 
-# ---------------------------------------------------------------------------
+            chain = "A" if self.passes == 1 else "B"
+            input_path = self.input_path if self.passes == 1 else self.output_path_af
 
-def _build_trainer(checkpoint_dir: str):
-    """The ProteinMPNN trainer, or a dummy for a wiring smoke test."""
-    if os.environ.get("ROME_TRAINER", "mpnn").lower() == "dummy":
-        from rome.dummy import DummyTrainer
-
-        return DummyTrainer(train_seconds=1.0, gpus=0)
-
-    from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
-
-    return ProteinMPNNTrainer(ProteinMPNNConfig(
-        mpnn_repo=MPNN_REPO,
-        # Fine-tune the weights IMPRESS runs and publish back into the repo so
-        # the next pass picks them up. A binder is a dimer: chain A designed,
-        # chain B (the peptide) is context — the trainer's defaults.
-        publish_into_repo=True,
-        model_name="v_48_020",
-    ), gpus=1)
-
-
-async def impress_protein_bind() -> None:
-    workdir = tempfile.mkdtemp(prefix="impress_r_")
-
-    # ROME-A with no engine passed in: it builds its own at start() and shuts it
-    # down at stop(), so its training runs independently of IMPRESS's tasks.
-    manager = rome.Manager(
-        data_config=rome.DataConfig(
-            # A campaign contributes ~one scored design per pipeline per pass,
-            # so the corpus grows slowly; set this to how many accepted designs
-            # a round should wait for. percentile_sampler needs no score
-            # calibration — see docs/impress.md.
-            min_samples=int(os.environ.get("ROME_MIN_SAMPLES", 8)),
-            sample_func=percentile_sampler(0.33),
-        ),
-        trainer_config=rome.TrainerConfig(
-            trainer=_build_trainer(os.path.join(workdir, "checkpoints")),
-            checkpoint_dir=os.path.join(workdir, "checkpoints"),
-            poll_interval=1.0,
-            # On the Dragon backend a finished round's result can be delivered
-            # late while a task is running; publish from disk after this grace.
-            result_fallback_seconds=float(os.environ.get("ROME_FALLBACK", 60)),
-        ),
-    )
-    await manager.start()
-
-    backend = await _build_impress_backend()
-    impress = ImpressManager(execution_backend=backend)
-
-    try:
-        await impress.start(pipeline_setups=[
-            PipelineSetup(
-                name="p1",
-                type=ProteinBindingPipelineR,
-                adaptive_fn=make_adaptive_decision(manager, os.path.join(workdir, "designs")),
+            return (
+                f"python3 {mpnn_script} "
+                f"-pdb={input_path} "
+                f"-out={output_dir} "
+                f"-mpnn={self.mpnn_path} "
+                f"-seqs={self.num_seqs} "
+                "-is_monomer=0 "
+                f"-chains={chain}"
             )
-        ])
-        print("\nROME-A:", manager.report())
-    finally:
-        await impress.flow.shutdown()
-        await manager.stop()
 
+        @self.auto_register_task(local_task=True)
+        async def s2():
+            job_seqs_dir = f"{self.output_path_mpnn}/job_{self.passes}/seqs"
 
-async def _build_impress_backend():
-    """IMPRESS's execution backend. Local by default; Dragon on request.
+            for file_name in os.listdir(job_seqs_dir):
+                seqs = []
+                with open(os.path.join(job_seqs_dir, file_name)) as fd:
+                    lines = fd.readlines()[2:]  # Skip first two lines
 
-    The upstream script uses RadicalExecutionBackend (asyncflow 0.2.0); on
-    current asyncflow use one of these.
-    """
-    if os.environ.get("ROME_IMPRESS_BACKEND", "local").lower() == "dragon":
-        from rhapsody.backends import DragonExecutionBackendV3
+                score = None
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith(">"):
+                        score = float(line.split(",")[2].replace(" score=", ""))
+                    else:
+                        seqs.append([line, score])
 
-        return await DragonExecutionBackendV3({"results_ddict_mem": 2 * 1024 ** 3})
-    from concurrent.futures import ThreadPoolExecutor
+                seqs.sort(key=lambda x: x[1])  # Sort by score
+                self.iter_seqs[file_name.split(".")[0]] = seqs
 
-    from radical.asyncflow import LocalExecutionBackend
+        # fasta - don't use helper script - cannot run x tasks for x structures
+        @self.auto_register_task(local_task=True)
+        async def s3():
+            output_dir = os.path.join(self.output_path, "af", "fasta")
 
-    return await LocalExecutionBackend(ThreadPoolExecutor())
+            fasta_file_to_return = []
+            for fasta_file in self.fasta_list_2:
+                base_name = fasta_file.split(".")[0]
+                fasta_file_to_return.append(base_name)
+                design_seq = self.iter_seqs[base_name][self.seq_rank][0]
+                pep_seq = "EGYQDYEPEA"
 
+                fasta_path = os.path.join(output_dir, f"{base_name}.fa")
+                with open(fasta_path, "w") as f:
+                    f.write(f">pdz\n{design_seq}\n>pep\n{pep_seq}\n")
 
-if __name__ == "__main__":
-    asyncio.run(impress_protein_bind())
+            return fasta_file_to_return
+
+        # alphafold, must be run separately for each structure one at a time!
+        @self.auto_register_task(capture_stdio=True)
+        async def s4(target_fasta, task_description={"gpus_per_rank": 1}):  # noqa: B006
+            cmd = (
+                f"/bin/bash {self.base_path}/af2_multimer_reduced_singularity.sh "
+                f"{self.output_path}/af/fasta/ "
+                f"{target_fasta}.fa "
+                f"{self.output_path}/af/prediction/dimer_models/ "
+            )
+
+            return cmd
+
+        @self.auto_register_task(local_task=True)
+        async def s45(fasta_files):
+            for target_fasta in fasta_files:
+                models_path = os.path.join(
+                    self.output_path, "af", "prediction", "dimer_models", target_fasta
+                )
+                best_model_pdb = os.path.join(
+                    self.output_path,
+                    "af",
+                    "prediction",
+                    "best_models",
+                    f"{target_fasta}.pdb",
+                )
+                best_ptm_json = os.path.join(
+                    self.output_path,
+                    "af",
+                    "prediction",
+                    "best_ptm",
+                    f"{target_fasta}.json",
+                )
+                mpnn_pdb = os.path.join(
+                    self.output_path,
+                    "mpnn",
+                    f"job_{self.passes}",
+                    f"{target_fasta}.pdb",
+                )
+                command = [
+                    f"cp {models_path}/*ranked_0*.pdb {best_model_pdb}",
+                    f"cp {models_path}/*ranking_debug*.json {best_ptm_json}",
+                    f"cp {models_path}/*ranked_0*.pdb {mpnn_pdb}",
+                ]
+                for command in command:
+                    os.system(command)
+
+        @self.auto_register_task()  # pLDTT_extract
+        async def s5(task_description={}):  # noqa: B006
+            return (
+                f"python3 {self.base_path}/plddt_extract_pipeline.py "
+                f"--path={self.base_path} "
+                f"--iter={self.passes} "
+                f"--out={self.name}"
+            )
+
+    async def get_scores_map(self):
+        """Return current and previous scores"""
+        return {"c_scores": self.current_scores, "p_scores": self.previous_scores}
+
+    def finalize(self, sub_iter_seqs):
+        # finalize the "cleanup" of the current pipeline
+        for a in sub_iter_seqs:
+            self.fasta_list_2.remove(f"{a}.pdb")
+            os.unlink(f"{self.output_path_af}/{a}.pdb")
+            os.unlink(f"{self.output_path}/af/fasta/{a}.fa")
+        self.previous_scores = copy.deepcopy(self.current_scores)
+
+    async def run(self):
+        """Main execution logic"""
+        
+        self.logger.pipeline_log(f"Running for a maximum of {self.max_passes} passes")
+        
+        while self.passes <= self.max_passes:
+            self.logger.pipeline_log(f"Starting pass {self.passes}")
+
+            if self.is_child and self.passes == self.start_pass:
+                self.logger.pipeline_log(
+                    "Skipping MPNN and Ranking steps for this child pipeline "
+                    "in the current pass only."
+                )
+
+                pass
+
+            else:
+                self.logger.pipeline_log("Submitting MPNN task")
+                await self.s1(task_description={"pre_exec": TASK_PRE_EXEC})
+                self.logger.pipeline_log("MPNN task finished")
+
+                self.logger.pipeline_log("Submitting sequence ranking task")
+                await self.s2()
+                self.logger.pipeline_log("Sequence ranking task finished")
+
+            self.logger.pipeline_log("Submitting scoring task")
+            fasta_files = await self.s3()
+            self.logger.pipeline_log("Scoring task finished")
+
+            alphafold_tasks = []
+
+            for target_fasta in fasta_files:
+                models_path = os.path.join(
+                    self.output_path, "af", "prediction", "dimer_models", target_fasta
+                )
+
+                best_model_pdb = os.path.join(
+                    self.output_path,
+                    "af",
+                    "prediction",
+                    "best_models",
+                    f"{target_fasta}.pdb",
+                )
+                best_ptm_json = os.path.join(
+                    self.output_path,
+                    "af",
+                    "prediction",
+                    "best_ptm",
+                    f"{target_fasta}.json",
+                )
+                mpnn_pdb = os.path.join(
+                    self.output_path,
+                    "mpnn",
+                    f"job_{self.passes}",
+                    f"{target_fasta}.pdb",
+                )
+
+                s4_description = {
+                    "pre_exec": TASK_PRE_EXEC,
+                    "post_exec": [
+                        f"cp {models_path}/*ranked_0*.pdb {best_model_pdb}",
+                        f"cp {models_path}/*ranking_debug*.json {best_ptm_json}",
+                        f"cp {models_path}/*ranked_0*.pdb {mpnn_pdb}",
+                    ],
+                }
+
+                # launch coroutine without awaiting yet
+                alphafold_tasks.append(
+                    self.s4(target_fasta=target_fasta, task_description=s4_description)
+                )
+
+            self.logger.pipeline_log(
+                f"Submitting {len(alphafold_tasks)} Alphafold tasks asynchronously"
+            )
+            await asyncio.gather(*alphafold_tasks, return_exceptions=True)
+            self.logger.pipeline_log(f"{len(alphafold_tasks)} Alphafold tasks finished")
+
+            self.logger.pipeline_log("Submitting pLDTT extraction task")
+            await self.s45(fasta_files=fasta_files)
+            staged_file = f"af_stats_{self.name}_pass_{self.passes}.csv"
+
+            await self.s5(
+                task_description={
+                    "pre_exec": TASK_PRE_EXEC,
+                    "output_staging": [
+                        {
+                            "source": f"task:///{staged_file}",
+                            "target": f"client:///{staged_file}",
+                        }
+                    ],
+                }
+            )
+            self.logger.pipeline_log("pLDTT extract finished")
+
+            await self.run_adaptive_step(wait=True)
+
+            if self.kill_parent:
+                break
+
+            self.passes += 1
