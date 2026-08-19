@@ -186,6 +186,41 @@ let ROME-A build its own. Both paths are covered by
   the pipeline constructor, which is how the example threads `base_path`
   through.
 
+### Seeing what ROME-A is doing — logging that matches IMPRESS
+
+ROME-A schedules its training out of the campaign's sight, so it logs its own
+lifecycle to stdout in the same shape as IMPRESS's `ImpressLogger` — the lines
+sit right alongside the `[PIPELINE-P1]` ones in a single run:
+
+```
+14:28:32.007 [INFO] [ROME-DATA]    received design 8oep1234 (score=95) — corpus 8 (4 unconsumed)
+14:28:33.114 [INFO] [ROME-TRAINER] submitting training round 1 (8 designs, ProteinMPNNTrainer) -> v1
+14:28:58.512 [INFO] [ROME-MODEL]   published v1 (8 designs) -> .../v_48_020.pt
+14:28:58.520 [INFO] [ROME-STREAM]  generate[0] reloaded weights -> v1 (v_48_020.pt)
+```
+
+The events the components emit at `INFO`:
+
+* `[ROME-DATA]` — every design received into the corpus (and, at `DEBUG`, every
+  one rejected by a filter or as a duplicate);
+* `[ROME-TRAINER]` — each training round submitted, and any round that failed
+  (`ERROR`);
+* `[ROME-MODEL]` — each new checkpoint published (the "creates a new model"
+  event), green like IMPRESS's `checkpoint`;
+* `[ROME-STREAM]` — a stream group starting, and a replica reloading weights;
+* `[ROME-MANAGER]` — start and stop.
+
+Three environment variables tune it, no code change:
+
+* `ROME_LOG_LEVEL` — `INFO` (default), `DEBUG` for per-record accept/reject
+  detail, `WARNING` to quiet the lifecycle lines.
+* `ROME_LOG_COLOR=0` — drop the ANSI colour (also dropped when `NO_COLOR` is
+  set). On by default, since Dragon captures a non-tty stdout.
+
+It matches IMPRESS's *format* without importing IMPRESS, so the same logging
+works in a workflow that has nothing to do with IMPRESS. If an application
+configures the `rome` logger itself, ROME-A leaves it alone.
+
 ### `post_exec` only runs on RadicalExecutionBackend — the empty `af_stats` trap
 
 The protein-binding pipeline selects AlphaFold's best model in the AF task's

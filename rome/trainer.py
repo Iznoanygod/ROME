@@ -17,7 +17,6 @@ Training starts automatically once enough data accumulates (the data manager's
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import traceback
@@ -27,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dragon.native.event import Event
 
+from rome._logging import get_logger
 from rome.data import DataManager
 from rome.train.base import FunctionTrainer, TrainTask
 from rome.utils import (
@@ -38,7 +38,11 @@ from rome.utils import (
 )
 
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
+#: A round publishing a checkpoint *creates a model*, so it logs under the
+#: ``[ROME-MODEL]`` tag (matching IMPRESS's green "checkpoint" component) rather
+#: than ``[ROME-TRAINER]``.
+model_log = get_logger("rome.model")
 
 
 def _has_files(root: str) -> bool:
@@ -307,6 +311,9 @@ class Trainer:
         call_kwargs.update(kwargs)
         call_kwargs.setdefault("model_version", version)
 
+        log.info("submitting training round %d (%s designs, trainer %s) -> v%d",
+                 self._rounds_completed + 1,
+                 sample_count if sample_count >= 0 else "?", task.name, version)
         checkpoint = await self._submit_round(task, dataset, output_dir, call_kwargs)
         self._publish(checkpoint or output_dir, version, sample_count)
         return checkpoint or output_dir
@@ -379,6 +386,9 @@ class Trainer:
         self.ddict["last_train_samples"] = sample_count
         self.data.mark_consumed()
         self._rounds_completed += 1
+        model_log.info("published v%d (%s designs) -> %s",
+                       version, sample_count if sample_count >= 0 else "?",
+                       checkpoint)
         self._status = (
             TrainerStatus.TRAINING_COMPLETE
             if self._rounds_exhausted()
@@ -493,6 +503,8 @@ class Trainer:
         self._last_error = "".join(
             traceback.format_exception(type(exc), exc, exc.__traceback__)
         )
+        log.error("training round failed: %s: %s",
+                  type(exc).__name__, exc)
         self._status = (
             TrainerStatus.FAILED if self.config.stop_on_failure else self._idle_status()
         )
