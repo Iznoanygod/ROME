@@ -119,29 +119,43 @@ A round is short by design: `max_epochs=3`, batching to `batch_tokens=10000`,
 resuming from the previously published checkpoint (or `initial_weights` on round
 one) with a Noam schedule, label-smoothed NLL — the original trainer's own recipe.
 
-## 6. What is tested, and what is not
+## 6. How the loop is built, and that it is verified
 
-Tested here, with no torch or ProteinMPNN checkout (`tests/unit/test_mpnn_trainer_data.py`,
-`tests/unit/test_train_tasks.py`):
+`_train_with_proteinmpnn` does **not** reimplement anything. It imports the
+checkout's own training modules and reproduces `training/training.py`'s inner
+loop exactly:
 
-* chain designation, including the dimer default and its overrides;
-* structure staging under unique names;
-* `validate` — required `path`, all records scanned, designed chain present;
-* the manifest (the audit trail);
-* the checkpoint format and the weight-publication path.
+* `featurize`, `loss_smoothed`, `NoamOpt`, and the training `ProteinMPNN` from
+  `training/model_utils.py` — note this is the *training* `ProteinMPNN`, whose
+  `forward(X, S, mask, chain_M, residue_idx, chain_encoding_all)` builds the
+  decoding order itself (the inference one in `protein_mpnn_utils.py` takes an
+  extra `randn` and is the wrong one to train with — the previous version's bug);
+* `parse_PDB` from `protein_mpnn_utils.py`, `StructureDataset` / `StructureLoader`
+  from `training/utils.py`.
 
-**Not** run in CI, and the one thing to validate on your allocation:
-`_train_with_proteinmpnn`, the torch loop. It is written against the original
-repo's stable public API — `parse_PDB`, `StructureDatasetPDB`, `tied_featurize`,
-`ProteinMPNN` from `protein_mpnn_utils` — plus a reimplemented label-smoothed loss
-and Noam optimiser so it depends only on the model and featurizer, not the
-repo's `training/` subpackage (whose helper signatures drift between commits).
-One thing to confirm against your checkout: `tied_featurize`'s return tuple has
-grown over time; the unpack takes the long-stable positions and is guarded, but
-check it. Until it is validated, set `config.train_func` to your own
-`(manifest_path, output_dir, config) -> checkpoint_path` — that is the path the
-examples run on, and the recommended way to bring up a real campaign one layer
-at a time.
+The dimer split is carried the way upstream carries it: each parsed structure
+gets a `masked_list` (designed chains → `chain_M == 1`) and `visible_list`
+(context → `0`), and the loss is `loss_smoothed(S, log_probs, mask * chain_M)` —
+resolved residues of the designed chain only.
+
+**Verified end to end**, not just described:
+`tests/integration/test_mpnn_train_real.py` fine-tunes from the public
+`v_48_020` weights on a real multi-chain PDB, then loads the published checkpoint
+back into `protein_mpnn_utils.ProteinMPNN` (the inference model
+`protein_mpnn_run.py` uses) — proving the checkpoint is compatible — and checks a
+second round resumes and advances the Noam step. It is gated on torch and a
+checkout, so it skips in CI; run it on your allocation with::
+
+    ROME_MPNN_TEST_REPO=$WORK/ProteinMPNN \
+      pytest tests/integration/test_mpnn_train_real.py
+
+The pure-Python half (chain designation, staging, `validate`, the manifest, the
+checkpoint format and publication path) is covered unconditionally in
+`tests/unit/test_mpnn_trainer_data.py` and `tests/unit/test_train_tasks.py`.
+
+`config.train_func` still lets you drop in your own
+`(manifest_path, output_dir, config) -> checkpoint_path` — for a fork, or to
+bring the campaign up one layer at a time before switching the real loop on.
 
 ## 7. Open items
 

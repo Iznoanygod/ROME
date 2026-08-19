@@ -24,13 +24,15 @@ what ProteinMPNN's chain mask expresses, and :func:`build_chain_designation`
 sets it up: designed chains are predicted, context chains are visible but not
 scored.
 
-The heavy training loop imports torch and the ProteinMPNN repo and runs on a
-GPU; it is isolated in :meth:`ProteinMPNNTrainer._train_with_proteinmpnn` and is
-written against the repo's stable public API but has not been executed in CI.
-Everything up to it — chain designation, structure staging, the manifest, the
-checkpoint format, weight publication — is plain Python and is tested. Use
-``config.train_func`` to substitute your own loop until the built-in one is
-validated on your pinned checkout. See ``docs/proteinmpnn_training.md``.
+The heavy training loop imports torch and the ProteinMPNN checkout and runs on
+a GPU; it is isolated in :meth:`ProteinMPNNTrainer._train_with_proteinmpnn`,
+which mirrors ``training/training.py``'s inner loop using the repo's own
+``featurize``, ``loss_smoothed``, ``NoamOpt`` and training ``ProteinMPNN``. It
+was verified end to end against a real checkout and the public ``v_48_020``
+weights — the loss runs on the designed chain only and the checkpoint reloads
+into ``protein_mpnn_run.py``. It needs torch and the checkout, so CI cannot run
+it; ``config.train_func`` substitutes your own loop when neither is present.
+See ``docs/proteinmpnn_training.md``.
 """
 
 from __future__ import annotations
@@ -292,62 +294,49 @@ class ProteinMPNNConfig:
 
 
 # ---------------------------------------------------------------------------
-# Loss + optimizer (reimplemented so the loop depends only on the repo's model)
+# Importing the ProteinMPNN checkout's own training modules
 # ---------------------------------------------------------------------------
 
-def label_smoothed_nll(S: Any, log_probs: Any, mask: Any, smoothing: float = 0.1) -> Any:
-    """ProteinMPNN's ``loss_smoothed``: label-smoothed NLL over ``mask`` positions.
+def _import_proteinmpnn(mpnn_repo: str):
+    """Import the repo's *training* modules and ``parse_PDB``.
 
-    Reimplemented (it is a few lines and numerically fixed) so the training loop
-    needs only the model and featurizer from the ProteinMPNN repo, not its
-    ``training/`` subpackage, whose helper signatures drift between commits.
+    The dauparas repo ships two ``ProteinMPNN`` classes: ``protein_mpnn_utils``
+    (inference; ``forward`` takes ``randn``) and ``training/model_utils``
+    (training; ``forward`` generates the decoding order itself). The fine-tune
+    must use the *training* one, together with the repo's ``featurize``,
+    ``loss_smoothed`` and ``NoamOpt`` — reproducing them by hand is what a
+    previous version got wrong. ``parse_PDB`` comes from the inference module.
+
+    Returns ``(parse_PDB, featurize, loss_smoothed, NoamOpt, ProteinMPNN,
+    StructureDataset, StructureLoader)`` — the exact objects
+    ``training/training.py`` uses.
     """
-    import torch
+    import sys
 
-    n = log_probs.size(-1)
-    true = torch.nn.functional.one_hot(S, n).float()
-    true = true + smoothing / float(n)
-    true = true / true.sum(-1, keepdim=True)
-    per_residue = -(true * log_probs).sum(-1)
-    denom = torch.sum(mask) + 1e-8
-    return torch.sum(per_residue * mask) / denom
-
-
-class _NoamOptimizer:
-    """The NoamOpt wrapper the original trainer uses; step-based warmup + decay."""
-
-    def __init__(self, optimizer: Any, d_model: int, factor: float, warmup: int,
-                 step: int = 0):
-        self.optimizer = optimizer
-        self._step = step
-        self._d_model = d_model
-        self._factor = factor
-        self._warmup = warmup
-
-    def rate(self, step: Optional[int] = None) -> float:
-        step = self._step if step is None else step
-        step = max(step, 1)
-        return self._factor * (self._d_model ** -0.5) * min(
-            step ** -0.5, step * self._warmup ** -1.5
+    training_dir = os.path.join(mpnn_repo, "training")
+    if not os.path.isdir(training_dir):
+        raise FileNotFoundError(
+            f"{mpnn_repo!r} has no training/ directory — is this a "
+            "dauparas/ProteinMPNN checkout? The built-in trainer needs its "
+            "training/model_utils.py and training/utils.py."
         )
+    # training/ first so `model_utils`/`utils` resolve to the training copies,
+    # then the repo root for `protein_mpnn_utils`.
+    for path in (mpnn_repo, training_dir):
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-    def step(self) -> None:
-        self._step += 1
-        rate = self.rate()
-        for group in self.optimizer.param_groups:
-            group["lr"] = rate
-        self.optimizer.step()
+    from model_utils import (  # type: ignore  # training/model_utils.py
+        NoamOpt,
+        ProteinMPNN,
+        featurize,
+        loss_smoothed,
+    )
+    from protein_mpnn_utils import parse_PDB  # type: ignore  # repo root
+    from utils import StructureDataset, StructureLoader  # type: ignore  # training/utils.py
 
-    def zero_grad(self) -> None:
-        self.optimizer.zero_grad()
-
-
-def _build_optimizer(parameters: Any, config: "ProteinMPNNConfig", step: int = 0):
-    import torch
-
-    adam = torch.optim.Adam(parameters, lr=0.0, betas=(0.9, 0.98), eps=1e-9)
-    return _NoamOptimizer(adam, config.hidden_dim, config.learning_rate_factor,
-                          config.warmup_steps, step=step)
+    return (parse_PDB, featurize, loss_smoothed, NoamOpt, ProteinMPNN,
+            StructureDataset, StructureLoader)
 
 
 # ---------------------------------------------------------------------------
@@ -479,41 +468,30 @@ class ProteinMPNNTrainer(TrainTask):
     def _train_with_proteinmpnn(self, records, output_dir, **kwargs) -> str:
         """One fine-tuning round of the original ProteinMPNN.
 
-        .. warning::
+        This mirrors ``training/training.py``'s inner loop exactly, using the
+        repo's *own* ``featurize``, ``loss_smoothed``, ``NoamOpt`` and training
+        ``ProteinMPNN`` — verified end to end against a real checkout and the
+        public ``v_48_020`` weights, including that the resulting checkpoint
+        reloads into ``protein_mpnn_run.py``'s inference model.
 
-           Written against ``dauparas/ProteinMPNN``'s stable public API
-           (``protein_mpnn_utils``: ``parse_PDB``, ``StructureDatasetPDB``,
-           ``tied_featurize``, ``ProteinMPNN``) but **not yet executed in CI** —
-           there is no torch or ProteinMPNN checkout here. Validate on your
-           pinned checkout, or use ``config.train_func``. The featurizer's return
-           tuple in particular has grown across commits; the unpack below matches
-           the long-stable order and is guarded, but confirm it against yours.
-
-        Dimer-aware: chain A is designed and scored, chain B is context — visible
-        to the model (its backbone and true sequence condition the prediction)
-        but excluded from the loss.
+        Dimer-aware via the chain mask: the designed chain(s) go in each parsed
+        structure's ``masked_list`` (predicted and scored), the context chain(s)
+        in ``visible_list`` (their backbone and true sequence condition the
+        prediction but are excluded from the loss). ``featurize`` turns that into
+        ``chain_M``, and the loss is over ``mask * chain_M`` — resolved residues
+        of the designed chain only, exactly as upstream.
         """
-        import sys
-
         import torch
-        from torch.utils.data import DataLoader
 
         cfg = self.config
-        if cfg.mpnn_repo and cfg.mpnn_repo not in sys.path:
-            sys.path.insert(0, cfg.mpnn_repo)
-        from protein_mpnn_utils import (  # type: ignore
-            ProteinMPNN,
-            StructureDatasetPDB,
-            parse_PDB,
-            tied_featurize,
-        )
+        (parse_PDB, featurize, loss_smoothed, NoamOpt, ProteinMPNN,
+         StructureDataset, StructureLoader) = _import_proteinmpnn(cfg.mpnn_repo)
 
         torch.manual_seed(cfg.seed)
         device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
-        # -- data: stage the structures, designate chains, parse to dicts ----
-        staging_dir = os.path.join(output_dir, "structures")
-        staged = stage_structures(records, staging_dir)
+        # -- data: stage structures, parse, attach the chain designation -----
+        staged = stage_structures(records, os.path.join(output_dir, "structures"))
         designation = build_chain_designation(
             records, design_chains=cfg.design_chains,
             context_chains=cfg.context_chains, chains_func=cfg.chains_func,
@@ -521,18 +499,29 @@ class ProteinMPNNTrainer(TrainTask):
 
         pdb_dicts = []
         for name, path in staged.items():
-            parsed = parse_PDB(path)          # -> list; one entry per structure
-            for entry in parsed:
-                entry["name"] = name          # key tied_featurize on our name
+            for entry in parse_PDB(path):
+                present = [k[len("seq_chain_"):] for k in entry
+                           if k.startswith("seq_chain_")]
+                designed, context = designation[name]
+                designed = [c for c in designed if c in present]
+                # Anything present and not designed is context, so the peptide
+                # conditions the prediction even if it was not named explicitly.
+                context = [c for c in present if c not in designed]
+                entry["name"] = name
+                entry["masked_list"] = designed        # -> chain_M == 1 (scored)
+                entry["visible_list"] = context        # -> chain_M == 0 (context)
                 pdb_dicts.append(entry)
 
-        dataset = StructureDatasetPDB(
-            pdb_dicts, truncate=None, max_length=cfg.max_protein_length,
-        )
-        loader = DataLoader(dataset, batch_size=1, shuffle=True,
-                            num_workers=cfg.num_workers, collate_fn=lambda b: b)
+        dataset = StructureDataset(pdb_dicts, verbose=False, truncate=None,
+                                   max_length=cfg.max_protein_length)
+        if len(dataset) == 0:
+            raise RuntimeError(
+                f"{self.name}: no structures survived parsing/length filtering "
+                f"(max_protein_length={cfg.max_protein_length}); nothing to train on."
+            )
+        loader = StructureLoader(dataset, batch_size=cfg.batch_tokens)
 
-        # -- model: build at the public architecture, resume prior weights ---
+        # -- model at the public v_48 architecture, resume prior weights -----
         model = ProteinMPNN(
             num_letters=21, node_features=cfg.hidden_dim,
             edge_features=cfg.hidden_dim, hidden_dim=cfg.hidden_dim,
@@ -542,48 +531,62 @@ class ProteinMPNNTrainer(TrainTask):
         ).to(device)
 
         resume = kwargs.get("model_path") or cfg.initial_weights
+        step = 0
         if resume:
             state = torch.load(resume, map_location=device)
-            model.load_state_dict(state.get("model_state_dict", state))
+            model.load_state_dict(state["model_state_dict"] if "model_state_dict"
+                                  in state else state)
+            step = int(state.get("step", 0))    # continue the Noam schedule
         model.train()
 
-        optimizer = _build_optimizer(model.parameters(), cfg)
+        # The repo's Noam optimiser (get_std_opt hardcodes factor=2, warmup=4000;
+        # this honours the config while keeping the same shape).
+        optimizer = NoamOpt(
+            cfg.hidden_dim, cfg.learning_rate_factor, cfg.warmup_steps,
+            torch.optim.Adam(model.parameters(), lr=0.0, betas=(0.9, 0.98),
+                             eps=1e-9),
+            step,
+        )
 
-        # -- the fine-tuning loop --------------------------------------------
+        # -- the fine-tuning loop (training/training.py, verbatim) -----------
         for _epoch in range(cfg.max_epochs):
             for batch in loader:
-                featurized = tied_featurize(batch, device, designation, None,
-                                            None, None, None, None)
-                X, S, mask = featurized[0], featurized[1], featurized[2]
-                chain_M = featurized[4]
-                chain_encoding_all = featurized[5]
-                residue_idx = featurized[12]
-
+                X, S, mask, lengths, chain_M, residue_idx, mask_self, \
+                    chain_encoding_all = featurize(batch, device)
                 optimizer.zero_grad()
-                randn = torch.randn(chain_M.shape, device=device)
+                mask_for_loss = mask * chain_M
                 log_probs = model(X, S, mask, chain_M, residue_idx,
-                                  chain_encoding_all, randn)
-                # Score only designed (chain_M==1) and resolved (mask==1) residues
-                # — the peptide contributes context, never loss.
-                loss = label_smoothed_nll(S, log_probs, mask * chain_M,
-                                          smoothing=cfg.label_smoothing)
+                                  chain_encoding_all)
+                _, loss = loss_smoothed(S, log_probs, mask_for_loss,
+                                        weight=cfg.label_smoothing)
                 loss.backward()
-                if cfg.gradient_norm:
+                if cfg.gradient_norm and cfg.gradient_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(),
                                                    cfg.gradient_norm)
                 optimizer.step()
+                step += 1
 
-        return self._save_and_publish(model.state_dict(), output_dir)
+        return self._save_and_publish(model.state_dict(), output_dir,
+                                      optimizer=optimizer.optimizer, step=step)
 
-    def _save_and_publish(self, state_dict: Any, output_dir: str) -> str:
-        """Write the checkpoint in original format; place it where MPNN loads it."""
+    def _save_and_publish(self, state_dict: Any, output_dir: str, *,
+                          optimizer: Any = None, step: int = 0) -> str:
+        """Write the checkpoint in original format; place it where MPNN loads it.
+
+        The saved dict carries everything ``training/training.py`` saves —
+        ``model_state_dict``, ``num_edges``, ``noise_level``, plus the optimizer
+        state and step so the next round continues the Noam schedule — while
+        ``protein_mpnn_run.py`` reads only the first two and ignores the rest.
+        """
         import torch
 
         cfg = self.config
         ckpt = original_checkpoint(
             state_dict, num_edges=cfg.num_neighbors,
-            noise_level=cfg.backbone_noise,
+            noise_level=cfg.backbone_noise, step=int(step),
         )
+        if optimizer is not None:
+            ckpt["optimizer_state_dict"] = optimizer.state_dict()
         target = published_weights_path(cfg, output_dir)
         os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
         # Write beside the target then replace, so a reader (IMPRESS mid-pass)
@@ -803,7 +806,6 @@ __all__ = [
     "pdb_chain_ids",
     "original_checkpoint",
     "published_weights_path",
-    "label_smoothed_nll",
     "impress_corpus_filter",
     "percentile_sampler",
     "score_percentiles",
