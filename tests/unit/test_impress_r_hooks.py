@@ -19,11 +19,12 @@ import pytest
 os.environ.setdefault("USER", "tester")
 
 pytest.importorskip("impress")
+pytest.importorskip("rhapsody")
 
 try:
-    from examples.impress_r.protein_binding_rome import make_adaptive_decision  # noqa: E402
-except Exception as exc:  # the example's layout is managed on the cluster; skip if absent
-    pytest.skip(f"protein_binding_rome example not importable here: {exc}",
+    from examples.impress_r.run_protein_binding_rome import make_adaptive_decision  # noqa: E402
+except Exception as exc:  # the runner's deps are cluster-managed; skip if absent
+    pytest.skip(f"run_protein_binding_rome not importable here: {exc}",
                 allow_module_level=True)
 
 
