@@ -398,10 +398,12 @@ class Trainer:
         # Only if that await has not returned after `grace` seconds AND the
         # output is already on disk do we publish from disk; otherwise keep
         # waiting. A shield keeps the timeout from cancelling the round.
+        waited = 0.0
         while True:
             try:
                 return await asyncio.wait_for(asyncio.shield(fut), timeout=grace)
             except asyncio.TimeoutError:
+                waited += grace
                 if _round_output_ready(done_path):
                     log.warning(
                         "round %s: output is on disk but the execution "
@@ -410,6 +412,19 @@ class Trainer:
                         done_path, grace,
                     )
                     return done_path
+                # Output not on disk yet and the future is still pending. Say so
+                # rather than looping silently — a silent re-wait is exactly what
+                # a hang looks like. This is normal for a round that simply takes
+                # longer than `grace` to run; it only means trouble if the output
+                # dir stays empty long past when the round should have finished,
+                # which points at the round not being scheduled at all (e.g. its
+                # execution slot held by a long-lived stream service on a small
+                # allocation) rather than run-but-undelivered — the disk check
+                # above catches the latter.
+                log.info(
+                    "round %s: still waiting after %.0fs (future pending, no "
+                    "output on disk yet)", done_path, waited,
+                )
 
     def _publish(self, checkpoint: str, version: int, sample_count: int) -> None:
         """Make a finished checkpoint visible to the rest of the workflow.

@@ -120,7 +120,18 @@ async def run():
                 name="infer",
                 load_func=dummy_load,
                 process_func=dummy_infer,
-                num_streams=int(os.environ.get("ROME_STREAM_REPLICAS", 2)),
+                # A stream replica is a *service* task that holds its execution
+                # slot for the whole run, and the training round needs a slot of
+                # its own. So the loop needs num_streams + 1 concurrent slots; on
+                # the 2-service allocation measured by
+                # test_task_capacity_dragon.py, that means num_streams=1 (one
+                # replica + the round). Default to 1 so this whole-loop smoke
+                # test completes on the minimum allocation instead of the round
+                # starving forever behind the streams (an empty checkpoint dir
+                # with the future PENDING — the fallback publishes from disk, but
+                # only for a round that actually ran). Raise ROME_STREAM_REPLICAS
+                # on a bigger allocation to exercise multi-replica spread.
+                num_streams=int(os.environ.get("ROME_STREAM_REPLICAS", 1)),
                 batch_size=2,
                 poll_interval=0.02,
                 # This box has no GPUs; the default num_gpus=1 puts
