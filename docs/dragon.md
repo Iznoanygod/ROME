@@ -275,10 +275,27 @@ thread was alive (it was), and whether missing-key reads are slow (they are not
 — 0.4 ms; it is specifically a *pending* key that blocks).
 
 **The workaround.** `TrainerConfig.result_fallback_seconds` (default 60s). A
-round whose checkpoint is already on disk is treated as finished if the backend
-has still not delivered its result after the grace period. The round itself was
-never the problem — only the notification — so the checkpoint is the sounder
-signal. Set it to `None` to disable and wait on the backend forever.
+round whose output is already on disk is treated as finished if the backend has
+still not delivered its result after the grace period. The round itself was
+never the problem — only the notification — so the disk is the sounder signal.
+Set it to `None` to disable and wait on the backend forever.
+
+How "on disk" is detected differs by task type:
+
+* An **executable** round (the ProteinMPNN trainer — submitted as a command)
+  writes a per-round completion marker, `train_complete`
+  (`rome.trainer.TRAIN_COMPLETE_MARKER`), into its `output_dir` as its *final*
+  action. The trainer polls for that marker every couple of seconds, so it
+  detects completion within seconds of the round finishing rather than waiting
+  out the full grace — the future never resolving costs almost nothing. The
+  marker, not the checkpoint, is the signal on purpose: with
+  `publish_into_repo` the checkpoint is a stable path that already exists from
+  the previous round (or the initial weights), so its existence proves nothing.
+  Any `as_command` trainer must write this marker last; see
+  `TrainTask.as_command`.
+* A **function** round has no such marker, and its future's return value is the
+  real checkpoint path, so the trainer waits the full grace for the backend to
+  deliver it before falling back to the output directory.
 
 With that in place the whole loop passes on `DragonExecutionBackendV3`:
 
@@ -308,6 +325,15 @@ reports which shard the result reached, the value's shape, monitor-thread
 liveness, and how long it takes to read a still-running task's key. If that read
 returns quickly on your allocation, the mechanism there is something else and
 the output says what.
+
+`tests/dragon/test_executable_result_hang_dragon.py` is the minimal,
+report-ready reproducer — no ROME-A, just Dragon + rhapsody + asyncflow. It
+submits a trivial **executable** task (`sh -c 'echo … > file'`) with an idle
+service running and shows the command completes (its output file lands on disk)
+while asyncflow's future for it stays PENDING. The executable form makes the
+defect unambiguous for an upstream issue: a shell command that exited 0 whose
+completion was never delivered. `test_service_blocks_results_dragon.py` shows
+the same for a `function_task`, and tabulates no-service / idle / busy.
 
 If the mechanism does hold, the fix belongs upstream in the monitor, which
 should test for a key's presence before reading it, or skip tasks it knows

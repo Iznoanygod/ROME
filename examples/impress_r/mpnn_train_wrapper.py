@@ -203,6 +203,18 @@ def run_round(job: Dict[str, Any]) -> str:
         tmp = target + ".tmp"
         torch.save(ckpt, tmp)
         os.replace(tmp, target)
+
+        # Completion marker, written LAST, into this round's output_dir. The
+        # training manager polls for it to detect that the round finished, even
+        # when the execution backend never delivers the task's result (a Dragon
+        # defect — see docs/dragon.md). It has to be this marker rather than the
+        # checkpoint itself: with publish_into_repo the checkpoint is a stable
+        # path that already exists from the previous round. Name kept in sync
+        # with rome.trainer.TRAIN_COMPLETE_MARKER.
+        output_dir = job.get("output_dir")
+        if output_dir:
+            with open(os.path.join(output_dir, "train_complete"), "w") as fd:
+                fd.write(target)
         return target
     finally:
         # Release the GPU as soon as the round ends — see the module docstring.

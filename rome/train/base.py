@@ -78,6 +78,15 @@ class TrainTask:
         Return ``None`` (the default) to run :meth:`train` in-process as a
         function task. A GPU fine-tune should prefer the command form: the
         subprocess exits when the round ends, releasing its VRAM.
+
+        Completion contract: the command MUST write a file named
+        ``train_complete`` (``rome.trainer.TRAIN_COMPLETE_MARKER``) into its
+        ``output_dir`` as its *final* action, after the checkpoint is safely on
+        disk. The training manager polls for that marker to detect the round
+        finished, because on Dragon a task can run to completion and never
+        resolve its future (a running service blocks result delivery — see
+        ``docs/dragon.md``). The marker, not the checkpoint, is the signal: with
+        publish-in-place the checkpoint path already exists from the prior round.
         """
         return None
 
