@@ -46,28 +46,6 @@ def say(m):
     print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
 
 
-async def idle_service(ser, marker):
-    """A service task that only sleeps — enough to trigger the defect."""
-    from dragon.data.ddict import DDict
-
-    DDict.attach(ser)[marker] = "up"
-    for _ in range(6000):
-        await asyncio.sleep(0.1)
-
-
-def _command_returning(cmd):
-    """An executable-task body: an async function that returns the command line.
-
-    asyncflow's executable task calls the body, expects a non-empty command
-    string back, ``shlex.split``s it, and runs it on the backend.
-    """
-    async def run_command():
-        return cmd
-
-    run_command.__name__ = "reproducer_exec"
-    return run_command
-
-
 async def main():
     from dragon.data.ddict import DDict
     from radical.asyncflow import WorkflowEngine
@@ -77,6 +55,21 @@ async def main():
     flow = await WorkflowEngine.create(backend=backend)
     d = DDict(managers_per_node=1, n_nodes=1, total_mem=256 * 1024 ** 2)
     ser = d.serialize()
+
+    # An executable task: the body returns the shell command asyncflow runs, and
+    # calling the decorated task returns a future for its completion.
+    @flow.executable_task
+    async def shell(command, task_description={}):  # noqa: B006 - asyncflow reads this default
+        return command
+
+    # A service task that only sleeps — enough to trigger the defect.
+    @flow.function_task(service=True)
+    async def idle_service(serialized, marker, task_description={}):  # noqa: B006
+        from dragon.data.ddict import DDict
+
+        DDict.attach(serialized)[marker] = "up"
+        for _ in range(6000):
+            await asyncio.sleep(0.1)
 
     workdir = tempfile.mkdtemp(prefix="exec_hang_")
     wait_for = float(os.environ.get("RESOLVE_TIMEOUT", 45))
@@ -90,12 +83,19 @@ async def main():
                 await asyncio.sleep(0.5)
         return False
 
+    async def file_appears(path, secs=5):
+        for _ in range(int(secs / 0.25)):
+            if os.path.isfile(path):
+                return True
+            await asyncio.sleep(0.25)
+        return os.path.isfile(path)
+
     async def probe(label, name):
         """Submit an executable task that writes a file; report ran vs resolved."""
         out = os.path.join(workdir, f"{name}.out")
         # A plain shell command that provably completes and leaves a file.
         cmd = f"/bin/sh -c {shlex.quote(f'echo ran > {shlex.quote(out)}')}"
-        fut = flow.executable_task()(_command_returning(cmd))(task_description={})
+        fut = shell(cmd, task_description={})
         try:
             await asyncio.wait_for(asyncio.shield(fut), timeout=wait_for)
             resolved = True
@@ -104,9 +104,9 @@ async def main():
         except Exception as ex:
             say(f"   {label}: future raised {type(ex).__name__}: {ex}")
             resolved = True
-        # Give a still-pending case a moment; the file is written the instant the
-        # command exits, so if it is absent here the command genuinely did not run.
-        ran = await _file_appears(out, secs=5)
+        # The file is written the instant the command exits; if it is absent
+        # even now, the command genuinely did not run.
+        ran = await file_appears(out)
         say(f"   {label}: ran(file on disk)={ran} future_resolved={resolved}")
         return ran, resolved
 
@@ -116,7 +116,7 @@ async def main():
     results["no service"] = await probe("no service", "w1")
 
     say("2. start an IDLE service (sleeps only), then the same executable task")
-    flow.function_task(service=True)(idle_service)(ser, "svc_idle", task_description={})
+    idle_service(ser, "svc_idle", task_description={})
     say(f"   idle service up: {await service_up('svc_idle')}")
     results["idle service"] = await probe("idle service", "w2")
 
@@ -136,14 +136,6 @@ async def main():
 
     d.destroy()
     return 1 if broken else 0
-
-
-async def _file_appears(path, secs=5):
-    for _ in range(int(secs / 0.25)):
-        if os.path.isfile(path):
-            return True
-        await asyncio.sleep(0.25)
-    return os.path.isfile(path)
 
 
 if __name__ == "__main__":
