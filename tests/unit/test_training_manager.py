@@ -314,3 +314,73 @@ def test_report_summarizes_the_run(trainer, data):
     assert report["rounds_completed"] == 1
     assert report["corpus_size"] == 2
     assert report["last_error"] is None
+
+
+# -- executable-round completion detection (the Dragon result-delivery gap) ----
+
+def _fallback_trainer(namespace, data, asyncflow, tmp_path, grace):
+    return Trainer(
+        namespace, data, asyncflow,
+        TrainerConfig(trainer=RecordingTrainer(),
+                      checkpoint_dir=str(tmp_path / "ckpt"),
+                      auto_train=False, result_fallback_seconds=grace),
+    )
+
+
+def test_await_round_completes_when_the_marker_appears_not_the_future(
+        namespace, data, asyncflow, tmp_path):
+    """An executable round is done when its completion marker lands on disk.
+
+    On Dragon the task's future can stay PENDING forever (a running service
+    blocks result delivery), so the round must be detected by the per-round
+    marker the wrapper writes — promptly, without waiting on the future.
+    """
+    from rome.trainer import TRAIN_COMPLETE_MARKER
+
+    trainer = _fallback_trainer(namespace, data, asyncflow, tmp_path, grace=0.2)
+    outdir = tmp_path / "round"
+    outdir.mkdir()
+    marker = str(outdir / TRAIN_COMPLETE_MARKER)
+
+    async def scenario():
+        fut = asyncio.get_running_loop().create_future()   # never resolves
+
+        async def drop_marker():
+            await asyncio.sleep(0.3)
+            with open(marker, "w") as fd:
+                fd.write("done")
+
+        writer = asyncio.ensure_future(drop_marker())
+        result = await asyncio.wait_for(
+            trainer._await_round(fut, marker, authoritative=True), timeout=5)
+        await writer
+        return result, fut.done()
+
+    result, future_done = asyncio.run(scenario())
+    assert result == marker
+    assert future_done is False        # completion came from disk, not the future
+
+
+def test_await_round_does_not_complete_on_a_missing_marker(
+        namespace, data, asyncflow, tmp_path):
+    """No marker yet + pending future ⇒ still waiting.
+
+    Guards the publish_into_repo trap: the checkpoint is a stable path that
+    already exists from the prior round, so only the per-round marker — absent
+    here — may signal completion.
+    """
+    from rome.trainer import TRAIN_COMPLETE_MARKER
+
+    trainer = _fallback_trainer(namespace, data, asyncflow, tmp_path, grace=0.2)
+    outdir = tmp_path / "round"
+    outdir.mkdir()
+    marker = str(outdir / TRAIN_COMPLETE_MARKER)      # never created
+
+    async def scenario():
+        fut = asyncio.get_running_loop().create_future()   # never resolves
+        # _await_round must keep waiting; wrapping it in a 1s timeout must fire.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                trainer._await_round(fut, marker, authoritative=True), timeout=1.0)
+
+    asyncio.run(scenario())

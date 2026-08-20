@@ -19,7 +19,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from rome._logging import get_logger
 from rome.utils import MODEL_VERSION_KEY, Namespace
+
+_log = get_logger(__name__)
 
 #: Namespace holding one key per accepted record.
 RECORD_NS = "record"
@@ -162,13 +165,19 @@ class DataManager:
         record.setdefault("model_version", self.model_version)
 
         if not self._accepts(record):
+            _log.debug("rejected design %s (filtered: %s)",
+                       record["uid"][:8], self._reject_reason(record))
             return None
         if self._is_duplicate(record):
+            _log.debug("rejected design %s (duplicate)", record["uid"][:8])
             return None
 
         self._records[record["uid"]] = record
         self._meta.increment("total")
         self._evict_if_needed()
+        _log.info("received design %s%s — corpus %d (%d unconsumed)",
+                  record["uid"][:8], self._score_note(record),
+                  self.total_count, self.unconsumed_count)
         return record["uid"]
 
     def add_batch(self, records: Iterable[Dict[str, Any]]) -> List[str]:
@@ -192,6 +201,25 @@ class DataManager:
         if cfg.filter_func is not None and not cfg.filter_func(record):
             return False
         return True
+
+    def _reject_reason(self, record: Dict[str, Any]) -> str:
+        """Why ``_accepts`` turned a record away — for the DEBUG log line."""
+        cfg = self.config
+        if cfg.min_score is not None:
+            score = record.get(cfg.score_key)
+            if score is None:
+                return f"no {cfg.score_key}"
+            if score < cfg.min_score:
+                return f"{cfg.score_key}={score} < {cfg.min_score}"
+        return "filter_func"
+
+    def _score_note(self, record: Dict[str, Any]) -> str:
+        """`` (score=…)`` for the INFO line, or empty when unscored."""
+        score = record.get(self.config.score_key)
+        if score is None:
+            return ""
+        note = f"{score:g}" if isinstance(score, float) else str(score)
+        return f" ({self.config.score_key}={note})"
 
     def _is_duplicate(self, record: Dict[str, Any]) -> bool:
         if self.config.dedup_key is None:

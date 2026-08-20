@@ -32,11 +32,26 @@ from concurrent.futures import ThreadPoolExecutor
 from radical.asyncflow import LocalExecutionBackend, WorkflowEngine
 
 import rome
-from rome.train.mpnn import (
-    ProteinMPNNConfig,
-    ProteinMPNNTrainer,
-    impress_corpus_filter,
-)
+
+# The ProteinMPNN trainer ships with the IMPRESS-R example, not the framework.
+# Put the repo root on sys.path so the example package resolves whether this is
+# run as a script or imported.
+try:
+    from examples.impress_r.mpnn import (
+        ProteinMPNNConfig,
+        ProteinMPNNTrainer,
+        impress_corpus_filter,
+    )
+except ModuleNotFoundError:
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
+    from examples.impress_r.mpnn import (
+        ProteinMPNNConfig,
+        ProteinMPNNTrainer,
+        impress_corpus_filter,
+    )
 
 NUM_CYCLES = 10
 DESIGNS_PER_CYCLE = 8

@@ -24,23 +24,60 @@ what ProteinMPNN's chain mask expresses, and :func:`build_chain_designation`
 sets it up: designed chains are predicted, context chains are visible but not
 scored.
 
-The heavy training loop imports torch and the ProteinMPNN repo and runs on a
-GPU; it is isolated in :meth:`ProteinMPNNTrainer._train_with_proteinmpnn` and is
-written against the repo's stable public API but has not been executed in CI.
-Everything up to it — chain designation, structure staging, the manifest, the
-checkpoint format, weight publication — is plain Python and is tested. Use
-``config.train_func`` to substitute your own loop until the built-in one is
-validated on your pinned checkout. See ``docs/proteinmpnn_training.md``.
+This trainer is an IMPRESS-R *integration*, not framework core — ROME-A is
+workflow-agnostic — so it lives with the example, beside the inference wrapper
+(``mpnn_wrapper.py``) it complements. Import it from here::
+
+    from examples.impress_r.mpnn import ProteinMPNNTrainer, ProteinMPNNConfig
+
+**Runs as a command, not a function.** Like IMPRESS — which submits
+``mpnn_wrapper.py`` as a shell command rather than calling ProteinMPNN in the
+campaign process — the training manager submits this round as an *executable
+task*: :meth:`ProteinMPNNTrainer.as_command` stages the structures, writes a
+self-contained job spec, and returns ``python mpnn_train_wrapper.py --job
+<job.json>``. The fine-tune therefore runs in its own process on its own GPU,
+and that process exits when the round finishes, so its VRAM is released with it.
+
+The training loop itself lives in ``mpnn_train_wrapper.run_round`` (the sibling
+script) — one dragon-free copy, so the standalone script and the in-process path
+(a direct :meth:`train` call, used by the tests) share it. It mirrors
+``training/training.py``'s inner loop using the repo's own ``featurize``,
+``loss_smoothed``, ``NoamOpt`` and training ``ProteinMPNN``, verified end to end
+against a real checkout and the public ``v_48_020`` weights — the loss runs on
+the designed chain only and the checkpoint reloads into ``protein_mpnn_run.py``.
+``config.train_func`` substitutes your own loop (and keeps it in-process). See
+``docs/proteinmpnn_training.md``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from rome.train.base import TrainTask
+
+
+def _load_run_round():
+    """Import ``run_round`` from the sibling ``mpnn_train_wrapper``.
+
+    Works whether this module was imported as ``examples.impress_r.mpnn`` (the
+    test/package path) or as a bare ``mpnn`` (a script run from inside the
+    example directory): the wrapper sits next to this file, so its directory is
+    put on ``sys.path`` and it is imported by name. Lazy — only the in-process
+    :meth:`ProteinMPNNTrainer.train` path needs it; the command path never
+    imports the wrapper here, it runs it as a subprocess.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from mpnn_train_wrapper import run_round  # type: ignore
+
+    return run_round
+
 
 #: ProteinMPNN's amino-acid alphabet (index -> letter). Position 20 is ``X``.
 MPNN_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
@@ -276,6 +313,11 @@ class ProteinMPNNConfig:
 
     manifest_dir: Optional[str] = None
     train_func: Optional[Callable[..., str]] = None
+    #: The wrapper script the round is submitted as a command to run. Defaults to
+    #: the sibling ``examples/impress_r/mpnn_train_wrapper.py``; override to point
+    #: at a copy staged elsewhere on the cluster (as IMPRESS points ``-mpnn`` at
+    #: its own checkout).
+    train_script: Optional[str] = None
 
     def validate(self) -> None:
         if not self.design_chains and self.chains_func is None:
@@ -289,65 +331,6 @@ class ProteinMPNNConfig:
                 "built-in trainer; set config.train_func to use your own loop "
                 "instead. See docs/proteinmpnn_training.md."
             )
-
-
-# ---------------------------------------------------------------------------
-# Loss + optimizer (reimplemented so the loop depends only on the repo's model)
-# ---------------------------------------------------------------------------
-
-def label_smoothed_nll(S: Any, log_probs: Any, mask: Any, smoothing: float = 0.1) -> Any:
-    """ProteinMPNN's ``loss_smoothed``: label-smoothed NLL over ``mask`` positions.
-
-    Reimplemented (it is a few lines and numerically fixed) so the training loop
-    needs only the model and featurizer from the ProteinMPNN repo, not its
-    ``training/`` subpackage, whose helper signatures drift between commits.
-    """
-    import torch
-
-    n = log_probs.size(-1)
-    true = torch.nn.functional.one_hot(S, n).float()
-    true = true + smoothing / float(n)
-    true = true / true.sum(-1, keepdim=True)
-    per_residue = -(true * log_probs).sum(-1)
-    denom = torch.sum(mask) + 1e-8
-    return torch.sum(per_residue * mask) / denom
-
-
-class _NoamOptimizer:
-    """The NoamOpt wrapper the original trainer uses; step-based warmup + decay."""
-
-    def __init__(self, optimizer: Any, d_model: int, factor: float, warmup: int,
-                 step: int = 0):
-        self.optimizer = optimizer
-        self._step = step
-        self._d_model = d_model
-        self._factor = factor
-        self._warmup = warmup
-
-    def rate(self, step: Optional[int] = None) -> float:
-        step = self._step if step is None else step
-        step = max(step, 1)
-        return self._factor * (self._d_model ** -0.5) * min(
-            step ** -0.5, step * self._warmup ** -1.5
-        )
-
-    def step(self) -> None:
-        self._step += 1
-        rate = self.rate()
-        for group in self.optimizer.param_groups:
-            group["lr"] = rate
-        self.optimizer.step()
-
-    def zero_grad(self) -> None:
-        self.optimizer.zero_grad()
-
-
-def _build_optimizer(parameters: Any, config: "ProteinMPNNConfig", step: int = 0):
-    import torch
-
-    adam = torch.optim.Adam(parameters, lr=0.0, betas=(0.9, 0.98), eps=1e-9)
-    return _NoamOptimizer(adam, config.hidden_dim, config.learning_rate_factor,
-                          config.warmup_steps, step=step)
 
 
 # ---------------------------------------------------------------------------
@@ -459,10 +442,44 @@ class ProteinMPNNTrainer(TrainTask):
         pd.DataFrame(rows).to_parquet(path)
         return path
 
-    # -- the round ----------------------------------------------------------
+    # -- the round: prepare a job, run it as a command ----------------------
+
+    def as_command(self, dataset: Any, output_dir: str,
+                   **kwargs: Any) -> Optional[Tuple[str, str]]:
+        """Submit this round as a shell command, IMPRESS-style.
+
+        Stages the round's structures, writes a self-contained job spec, and
+        returns ``(command, checkpoint_path)`` where ``command`` runs
+        ``mpnn_train_wrapper.py`` on that spec. The training manager runs it as an
+        *executable task*, so the fine-tune is a separate process on its own GPU
+        rather than a function in the manager's address space.
+
+        Returns ``None`` when ``config.train_func`` is set — a custom loop is
+        Python, not a command, so it runs in-process through :meth:`train`.
+        """
+        if self.config.train_func is not None:
+            return None
+        records = list(dataset)
+        self.write_manifest(records, output_dir)
+        job, target = self._build_job(records, output_dir, **kwargs)
+        job_path = os.path.join(output_dir, "train_job.json")
+        with open(job_path, "w") as fd:
+            json.dump(job, fd, indent=2)
+
+        script = self.config.train_script or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "mpnn_train_wrapper.py"
+        )
+        command = f"{sys.executable} {script} --job {job_path}"
+        return command, target
 
     def train(self, dataset: Any, output_dir: str, **kwargs: Any) -> str:
-        """Fine-tune ProteinMPNN on the campaign's designs; return the checkpoint.
+        """Fine-tune ProteinMPNN in-process; return the checkpoint.
+
+        This is the direct/in-process path — the training manager normally goes
+        through :meth:`as_command` instead. Kept because a workflow (or a test)
+        may want to run a round synchronously, and because ``config.train_func``
+        plugs in here. It shares the exact loop the command runs, via
+        ``mpnn_train_wrapper.run_round``.
 
         ``kwargs`` carries ``model_version`` from the training manager and
         ``model_path`` when a previous round published one.
@@ -474,124 +491,64 @@ class ProteinMPNNTrainer(TrainTask):
             return self.config.train_func(manifest_path, output_dir, self.config) \
                 or output_dir
 
-        return self._train_with_proteinmpnn(records, output_dir, **kwargs)
+        run_round = _load_run_round()
+        job, _target = self._build_job(records, output_dir, **kwargs)
+        return run_round(job)
 
-    def _train_with_proteinmpnn(self, records, output_dir, **kwargs) -> str:
-        """One fine-tuning round of the original ProteinMPNN.
+    def _build_job(self, records: List[Dict[str, Any]], output_dir: str,
+                   **kwargs: Any) -> Tuple[Dict[str, Any], str]:
+        """Stage structures and assemble the job spec the wrapper consumes.
 
-        .. warning::
-
-           Written against ``dauparas/ProteinMPNN``'s stable public API
-           (``protein_mpnn_utils``: ``parse_PDB``, ``StructureDatasetPDB``,
-           ``tied_featurize``, ``ProteinMPNN``) but **not yet executed in CI** —
-           there is no torch or ProteinMPNN checkout here. Validate on your
-           pinned checkout, or use ``config.train_func``. The featurizer's return
-           tuple in particular has grown across commits; the unpack below matches
-           the long-stable order and is guarded, but confirm it against yours.
-
-        Dimer-aware: chain A is designed and scored, chain B is context — visible
-        to the model (its backbone and true sequence condition the prediction)
-        but excluded from the loss.
+        Staging takes a snapshot of each design's structure under a unique name
+        (a campaign overwrites ``{target}.pdb`` pass to pass), and the chain
+        designation is resolved here — on the manager side, where the corpus and
+        the config live — so the wrapper only has to parse and train. Returns
+        ``(job, target_weights_path)``; see ``mpnn_train_wrapper`` for
+        the spec.
         """
-        import sys
-
-        import torch
-        from torch.utils.data import DataLoader
-
         cfg = self.config
-        if cfg.mpnn_repo and cfg.mpnn_repo not in sys.path:
-            sys.path.insert(0, cfg.mpnn_repo)
-        from protein_mpnn_utils import (  # type: ignore
-            ProteinMPNN,
-            StructureDatasetPDB,
-            parse_PDB,
-            tied_featurize,
-        )
-
-        torch.manual_seed(cfg.seed)
-        device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-
-        # -- data: stage the structures, designate chains, parse to dicts ----
-        staging_dir = os.path.join(output_dir, "structures")
-        staged = stage_structures(records, staging_dir)
+        staged = stage_structures(records, os.path.join(output_dir, "structures"))
         designation = build_chain_designation(
             records, design_chains=cfg.design_chains,
             context_chains=cfg.context_chains, chains_func=cfg.chains_func,
         )
+        designs = []
+        for index, record in enumerate(records):
+            name = _design_name(record, index)
+            designed, context = designation[name]
+            designs.append({
+                "name": name,
+                "path": os.path.abspath(staged[name]),
+                "designed_chains": designed,
+                "context_chains": context,
+            })
 
-        pdb_dicts = []
-        for name, path in staged.items():
-            parsed = parse_PDB(path)          # -> list; one entry per structure
-            for entry in parsed:
-                entry["name"] = name          # key tied_featurize on our name
-                pdb_dicts.append(entry)
-
-        dataset = StructureDatasetPDB(
-            pdb_dicts, truncate=None, max_length=cfg.max_protein_length,
-        )
-        loader = DataLoader(dataset, batch_size=1, shuffle=True,
-                            num_workers=cfg.num_workers, collate_fn=lambda b: b)
-
-        # -- model: build at the public architecture, resume prior weights ---
-        model = ProteinMPNN(
-            num_letters=21, node_features=cfg.hidden_dim,
-            edge_features=cfg.hidden_dim, hidden_dim=cfg.hidden_dim,
-            num_encoder_layers=cfg.num_layers, num_decoder_layers=cfg.num_layers,
-            k_neighbors=cfg.num_neighbors, augment_eps=cfg.backbone_noise,
-            dropout=cfg.dropout,
-        ).to(device)
-
-        resume = kwargs.get("model_path") or cfg.initial_weights
-        if resume:
-            state = torch.load(resume, map_location=device)
-            model.load_state_dict(state.get("model_state_dict", state))
-        model.train()
-
-        optimizer = _build_optimizer(model.parameters(), cfg)
-
-        # -- the fine-tuning loop --------------------------------------------
-        for _epoch in range(cfg.max_epochs):
-            for batch in loader:
-                featurized = tied_featurize(batch, device, designation, None,
-                                            None, None, None, None)
-                X, S, mask = featurized[0], featurized[1], featurized[2]
-                chain_M = featurized[4]
-                chain_encoding_all = featurized[5]
-                residue_idx = featurized[12]
-
-                optimizer.zero_grad()
-                randn = torch.randn(chain_M.shape, device=device)
-                log_probs = model(X, S, mask, chain_M, residue_idx,
-                                  chain_encoding_all, randn)
-                # Score only designed (chain_M==1) and resolved (mask==1) residues
-                # — the peptide contributes context, never loss.
-                loss = label_smoothed_nll(S, log_probs, mask * chain_M,
-                                          smoothing=cfg.label_smoothing)
-                loss.backward()
-                if cfg.gradient_norm:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                   cfg.gradient_norm)
-                optimizer.step()
-
-        return self._save_and_publish(model.state_dict(), output_dir)
-
-    def _save_and_publish(self, state_dict: Any, output_dir: str) -> str:
-        """Write the checkpoint in original format; place it where MPNN loads it."""
-        import torch
-
-        cfg = self.config
-        ckpt = original_checkpoint(
-            state_dict, num_edges=cfg.num_neighbors,
-            noise_level=cfg.backbone_noise,
-        )
-        target = published_weights_path(cfg, output_dir)
-        os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
-        # Write beside the target then replace, so a reader (IMPRESS mid-pass)
-        # never sees a half-written weights file.
-        tmp = target + ".tmp"
-        torch.save(ckpt, tmp)
-        os.replace(tmp, target)
-        return target
+        target = os.path.abspath(published_weights_path(cfg, output_dir))
+        job = {
+            "mpnn_repo": cfg.mpnn_repo,
+            "resume_from": kwargs.get("model_path") or cfg.initial_weights,
+            "target_weights": target,
+            "output_dir": os.path.abspath(output_dir),
+            "designs": designs,
+            "hyperparams": {
+                "hidden_dim": cfg.hidden_dim,
+                "num_layers": cfg.num_layers,
+                "num_neighbors": cfg.num_neighbors,
+                "backbone_noise": cfg.backbone_noise,
+                "dropout": cfg.dropout,
+                "max_epochs": cfg.max_epochs,
+                "batch_tokens": cfg.batch_tokens,
+                "max_protein_length": cfg.max_protein_length,
+                "learning_rate_factor": cfg.learning_rate_factor,
+                "warmup_steps": cfg.warmup_steps,
+                "label_smoothing": cfg.label_smoothing,
+                "gradient_norm": cfg.gradient_norm,
+                "seed": cfg.seed,
+                "device": cfg.device,
+                "model_name": cfg.model_name,
+            },
+        }
+        return job, target
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +605,7 @@ def score_percentiles(
     share a scale — so the only safe way to set one is to look at what *this*
     campaign is producing::
 
-        from rome.train.mpnn import score_percentiles
+        from examples.impress_r.mpnn import score_percentiles
         print(score_percentiles(manager.data.get_records()))
 
     Returns ``{key: {"n", "min", "p10", "p25", "median", "p75", "p90", "max"}}``,
@@ -803,7 +760,6 @@ __all__ = [
     "pdb_chain_ids",
     "original_checkpoint",
     "published_weights_path",
-    "label_smoothed_nll",
     "impress_corpus_filter",
     "percentile_sampler",
     "score_percentiles",

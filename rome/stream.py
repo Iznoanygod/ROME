@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import time
 import traceback
 import uuid
@@ -37,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from dragon.data.ddict import DDict
 from dragon.native.event import Event
 
+from rome._logging import get_logger
 from rome.utils import (
     MODEL_PATH_KEY,
     MODEL_VERSION_KEY,
@@ -44,6 +46,8 @@ from rome.utils import (
     resource_description,
     submit_task,
 )
+
+log = get_logger(__name__)
 
 #: Sub-namespaces inside a stream group's own DDict.
 REQUEST_NS = "req"
@@ -361,6 +365,9 @@ class StreamTask:
                 )
             self.model_path = path
             self.local_version = max(version, self.local_version)
+            log.info("%s[%d] reloaded weights -> v%d (%s)",
+                     self.config.name, self.index, self.local_version,
+                     os.path.basename(path) if path else "no checkpoint")
             return True
         finally:
             # Cleared last, so a waiter in reload_model() only unblocks once the
@@ -443,6 +450,10 @@ class Stream:
             )
             self.stream_tasks.append(task)
             started.append(task)
+        log.info("started %s stream '%s' (%d replica%s, %d gpu%s each)",
+                 config.kind.value, config.name, config.num_streams,
+                 "" if config.num_streams == 1 else "s", config.num_gpus,
+                 "" if config.num_gpus == 1 else "s")
         return started
 
     def _open_group(self, config: StreamConfig) -> Namespace:

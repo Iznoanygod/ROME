@@ -45,7 +45,15 @@ from radical.asyncflow import LocalExecutionBackend
 
 import rome
 from rome.dummy import DummyTrainer
-from rome.train.mpnn import impress_corpus_filter
+
+# The ProteinMPNN corpus helpers ship with this example (mpnn.py), not the
+# framework — import whether run as a script here or as examples.impress_r.*.
+try:
+    from examples.impress_r.mpnn import impress_corpus_filter
+except ModuleNotFoundError:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from mpnn import impress_corpus_filter
 
 MAX_PASSES = 10
 DESIGNS_PER_PASS = 8

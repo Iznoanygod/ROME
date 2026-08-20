@@ -16,7 +16,7 @@ model. Nothing in the host workflow has to orchestrate that.
 Typical adoption::
 
     rome = Manager(asyncflow=flow, data_config=DataConfig(min_samples=64),
-                   trainer_config=TrainerConfig(trainer=ProteinMPNNTrainer()))
+                   trainer_config=TrainerConfig(trainer=my_trainer))
     await rome.start()
 
     ...                                   # the workflow runs unchanged
@@ -35,10 +35,13 @@ from dragon.data.ddict import DDict
 from dragon.native.event import Event
 from radical.asyncflow import WorkflowEngine
 
+from rome._logging import get_logger
 from rome.data import DataConfig, DataManager
 from rome.stream import Stream, StreamConfig, StreamKind, StreamStatus
 from rome.trainer import Trainer, TrainerConfig, TrainerStatus
 from rome.utils import MODEL_PATH_KEY, MODEL_VERSION_KEY, Namespace
+
+log = get_logger("rome.manager")
 
 #: Prefix isolating ROME-A's keys, so a DDict shared with the host workflow
 #: never collides with the workflow's own state.
@@ -73,7 +76,14 @@ class Manager:
     backend : optional
         Execution backend for the engine ROME-A builds for itself. Ignored when
         ``asyncflow`` is given. When both are omitted, asyncflow falls back to a
-        local backend.
+        **local, in-process** backend — fine for tests and CPU work, but wrong
+        for a GPU fine-tune: a training round then runs inside this driver
+        process, so the model's CUDA context stays resident for the whole
+        campaign instead of being freed when the round ends. Pass a
+        process-based backend (``DragonExecutionBackendV3`` on Delta, or a
+        ``ConcurrentExecutionBackend(ProcessPoolExecutor())``) so each round runs
+        in a task process that releases its VRAM on exit. See
+        ``examples/impress_r/run_protein_binding_rome.py``.
     data_config : DataConfig, optional
         How scored outputs become a dataset, and how much data a training round
         needs.
@@ -167,6 +177,12 @@ class Manager:
             await self.trainer.start()
 
         self._started = True
+        log.info("started — %d stream group%s, min_samples=%d, trainer %s",
+                 len(self._stream_configs),
+                 "" if len(self._stream_configs) == 1 else "s",
+                 self.data.config.min_samples,
+                 type(self.trainer.config.trainer).__name__
+                 if self.trainer.config.trainer is not None else "none")
         return self
 
     async def _ensure_asyncflow(self) -> None:
@@ -193,6 +209,10 @@ class Manager:
         checkpoint still reaches them.
         """
         self.stop_event.set()
+        log.info("stopping — corpus %d, %d round%s completed, model v%d",
+                 self.data.total_count, self.trainer.rounds_completed,
+                 "" if self.trainer.rounds_completed == 1 else "s",
+                 self.model_version)
         await self.trainer.stop(wait_for_stop=wait, timeout=timeout)
         await self.stream.stop(wait_for_stop=wait, timeout=timeout)
         # Each stream group owns a dictionary; the manager's teardown is where

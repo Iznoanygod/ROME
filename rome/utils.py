@@ -245,9 +245,10 @@ def submit_task(
     *args,
     task_description: Optional[Dict[str, Any]] = None,
     service: bool = False,
+    executable: bool = False,
     **kwargs,
 ):
-    """Submit ``func`` to the workflow engine as a function task.
+    """Submit ``func`` to the workflow engine as a task.
 
     ROME-A schedules nothing itself — asyncflow is the execution backend, and
     this is the single place ROME-A talks to it.
@@ -257,22 +258,34 @@ def submit_task(
     asyncflow : WorkflowEngine
         The engine the host workflow handed to ROME-A.
     func : coroutine function
-        The task body. asyncflow only accepts ``async def``; a blocking
-        trainer or inference call belongs inside an ``asyncio.to_thread``.
+        The task body. asyncflow only accepts ``async def``. For a *function*
+        task a blocking trainer or inference call belongs inside an
+        ``asyncio.to_thread``; for an *executable* task ``func`` instead returns
+        the shell command string to run (the same shape IMPRESS uses).
     task_description : dict, optional
         Backend-specific resource request (ranks, GPUs, placement policy, …).
         Passed straight through — ROME-A does not interpret it, because the
         keys depend on which execution backend the workflow is running.
     service : bool
         Mark the task as a long-running service. ROME-A's inference and reward
-        streams are services; a training round is not.
+        streams are services; a training round is not. Ignored for executable
+        tasks.
+    executable : bool
+        Submit as an executable (command) task rather than a function task.
+        ``func``'s return value is then the command line to run on the backend,
+        not a Python result. This is how a training round runs as its own
+        process — see :meth:`rome.train.base.TrainTask.as_command`.
 
     Returns
     -------
     asyncio.Future
-        Resolves to the task's return value.
+        Resolves when the task completes (to its return value for a function
+        task; to the backend's execution result for an executable one).
     """
-    decorated = asyncflow.function_task(service=service)(func)
+    if executable:
+        decorated = asyncflow.executable_task()(func)
+    else:
+        decorated = asyncflow.function_task(service=service)(func)
     return decorated(*args, task_description=task_description or {}, **kwargs)
 
 

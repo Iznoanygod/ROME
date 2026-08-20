@@ -17,7 +17,6 @@ Training starts automatically once enough data accumulates (the data manager's
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import traceback
@@ -27,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dragon.native.event import Event
 
+from rome._logging import get_logger
 from rome.data import DataManager
 from rome.train.base import FunctionTrainer, TrainTask
 from rome.utils import (
@@ -38,7 +38,11 @@ from rome.utils import (
 )
 
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
+#: A round publishing a checkpoint *creates a model*, so it logs under the
+#: ``[ROME-MODEL]`` tag (matching IMPRESS's green "checkpoint" component) rather
+#: than ``[ROME-TRAINER]``.
+model_log = get_logger("rome.model")
 
 
 def _has_files(root: str) -> bool:
@@ -51,6 +55,36 @@ def _has_files(root: str) -> bool:
         if filenames:
             return True
     return False
+
+
+#: Filename an executable trainer's wrapper writes into a round's ``output_dir``
+#: as its *final* action, so the driver can detect completion even when the
+#: backend never delivers the task's result. It must appear only when the round
+#: has finished writing its checkpoint — unlike the checkpoint itself, which for
+#: ``publish_into_repo`` is a stable path that already exists from the previous
+#: round (or the initial weights). Kept in sync with the wrapper scripts; see
+#: :meth:`rome.train.base.TrainTask.as_command`.
+TRAIN_COMPLETE_MARKER = "train_complete"
+
+
+def _round_output_ready(path: str) -> bool:
+    """Whether a round's output is on disk — a checkpoint file or a filled dir."""
+    return os.path.isfile(path) or _has_files(path)
+
+
+def _command_body(command: str):
+    """Wrap a shell command as an asyncflow executable-task body.
+
+    An executable task's body returns the command line to run; asyncflow places
+    it on the backend and runs it as a subprocess. Defined at module scope, and
+    closing over only the ``command`` string, so it pickles cleanly to a
+    multi-process backend.
+    """
+    async def run_command():
+        return command
+
+    run_command.__name__ = "rome_train_command"
+    return run_command
 
 
 class TrainerStatus(Enum):
@@ -307,6 +341,9 @@ class Trainer:
         call_kwargs.update(kwargs)
         call_kwargs.setdefault("model_version", version)
 
+        log.info("submitting training round %d (%s designs, trainer %s) -> v%d",
+                 self._rounds_completed + 1,
+                 sample_count if sample_count >= 0 else "?", task.name, version)
         checkpoint = await self._submit_round(task, dataset, output_dir, call_kwargs)
         self._publish(checkpoint or output_dir, version, sample_count)
         return checkpoint or output_dir
@@ -314,15 +351,39 @@ class Trainer:
     async def _submit_round(self, task, dataset, output_dir, call_kwargs) -> Any:
         """Hand one training round to asyncflow.
 
-        ``TrainTask.train`` is synchronous and blocking on purpose — a
-        fine-tune should not have to be written as a coroutine — so the task
-        body runs it in a thread and awaits that. Resource requirements come
-        from the ``TrainTask`` itself, which is what keeps "adding a new
-        training algorithm requires just one task" true.
+        A trainer that implements :meth:`~rome.train.base.TrainTask.as_command`
+        is submitted as an *executable* task — a shell command that runs the
+        round in its own process, the way IMPRESS submits its wrapper scripts.
+        Otherwise the round is a *function* task: ``TrainTask.train`` is
+        synchronous and blocking on purpose, so the body runs it in a thread and
+        awaits that. Resource requirements come from the ``TrainTask`` itself,
+        which is what keeps "adding a new training algorithm requires just one
+        task" true.
         """
         description = self.config.task_description
         if description is None:
             description = resource_description(gpus=task.gpus, nodes=task.nodes)
+
+        plan = task.as_command(dataset, output_dir, **call_kwargs)
+        if plan is not None:
+            command, checkpoint = plan
+            log.info("dispatching training round as a command: %s", command)
+            self._round_fut = submit_task(
+                self.asyncflow, _command_body(command),
+                task_description=description, executable=True,
+            )
+            # An executable task's result is not the checkpoint path, so we wait
+            # for completion and then report where the command wrote it. The
+            # wrapper writes a per-round completion marker into output_dir as its
+            # last action, so the marker appearing proves the round finished —
+            # which lets _await_round detect completion the moment it appears,
+            # without waiting on a future the backend may never resolve (see
+            # docs/dragon.md). The checkpoint itself can't be the signal: with
+            # publish_into_repo it is a stable path that already exists from the
+            # previous round or the initial weights.
+            marker = os.path.join(output_dir, TRAIN_COMPLETE_MARKER)
+            await self._await_round(self._round_fut, marker, authoritative=True)
+            return checkpoint
 
         async def train_entry():
             return await asyncio.to_thread(task.train, dataset, output_dir, **call_kwargs)
@@ -335,36 +396,66 @@ class Trainer:
         )
         return await self._await_round(self._round_fut, output_dir)
 
-    async def _await_round(self, fut: Any, output_dir: str) -> Any:
-        """Wait for a round, believing the disk if the backend goes quiet.
+    async def _await_round(self, fut: Any, done_path: str,
+                           *, authoritative: bool = False) -> Any:
+        """Wait for a round, believing the disk when the backend goes quiet.
 
-        Normally this is just ``await fut``. The fallback only engages when the
-        checkpoint has appeared on disk *and* the backend still has not resolved
-        the future ``result_fallback_seconds`` later — see
-        :class:`TrainerConfig`. A failed round still surfaces its exception,
-        because a body that raised never writes a checkpoint.
+        The round finishes as soon as *either* its future resolves *or* its
+        output appears on disk — because on Dragon a task can run to completion
+        and never resolve its future: a running service blocks rhapsody's monitor
+        from delivering the result (see ``docs/dragon.md``). So we cannot wait on
+        the future alone.
+
+        ``done_path`` is the per-round completion marker for an executable round
+        (see :data:`TRAIN_COMPLETE_MARKER`) or the output directory for a function
+        round. When ``authoritative`` (the executable case) the wrapper writes the
+        marker only after the checkpoint is safely on disk, so its existence *is*
+        completion: we poll for it briskly and publish the instant it appears,
+        rather than waiting out ``result_fallback_seconds``. For a function round
+        the future's return value is the real checkpoint path, so we give the
+        backend the full grace to deliver it before falling back to the output
+        directory. A failed round still surfaces its exception, because a body
+        that raised never writes its output.
         """
         grace = self.config.result_fallback_seconds
         if grace is None:
             return await fut
 
-        # Await the future for real — the same thing the loop did before the
-        # fallback existed, and what actually *drives* the task on every backend.
-        # Only if that await has not returned after `grace` seconds AND a
-        # checkpoint is already on disk do we publish from disk; otherwise keep
-        # waiting. A shield keeps the timeout from cancelling the round.
+        # Poll the disk this often. Brisk for an authoritative checkpoint file so
+        # completion is caught within seconds; for a function round there is
+        # nothing to gain from polling before the grace elapses, so wait it out.
+        poll = min(2.0, grace) if authoritative else grace
+        waited = 0.0
         while True:
             try:
-                return await asyncio.wait_for(asyncio.shield(fut), timeout=grace)
+                # Awaiting the future is what actually *drives* the task; the
+                # shield keeps the timeout from cancelling the round.
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=poll)
             except asyncio.TimeoutError:
-                if _has_files(output_dir):
+                waited += poll
+                if _round_output_ready(done_path) and (authoritative or waited >= grace):
                     log.warning(
-                        "round %s: checkpoint is on disk but the execution "
-                        "backend never delivered the result after %.0fs; "
-                        "publishing from disk",
-                        output_dir, grace,
+                        "round %s: the execution backend has not delivered a "
+                        "result after %.0fs, but the checkpoint is on disk — "
+                        "publishing from disk. The task finished; its future "
+                        "never resolved, which on Dragon means a running service "
+                        "is blocking result delivery (see docs/dragon.md).",
+                        done_path, waited,
                     )
-                    return output_dir
+                    return done_path
+                # Nothing on disk yet and the future is still pending. Say so
+                # every `grace` seconds rather than looping silently — a silent
+                # re-wait is exactly what a hang looks like. This is normal while
+                # a round is still running; it only means trouble if the output
+                # stays absent long past when the round should have finished,
+                # which points at the round not being scheduled at all (e.g. its
+                # execution slot held by a long-lived stream service on a small
+                # allocation — see docs/dragon.md and test_task_capacity_dragon).
+                if waited >= grace and (waited % grace) < poll:
+                    log.info(
+                        "round %s: still waiting after %.0fs (future pending, no "
+                        "output on disk yet)", done_path, waited,
+                    )
 
     def _publish(self, checkpoint: str, version: int, sample_count: int) -> None:
         """Make a finished checkpoint visible to the rest of the workflow.
@@ -379,6 +470,9 @@ class Trainer:
         self.ddict["last_train_samples"] = sample_count
         self.data.mark_consumed()
         self._rounds_completed += 1
+        model_log.info("published v%d (%s designs) -> %s",
+                       version, sample_count if sample_count >= 0 else "?",
+                       checkpoint)
         self._status = (
             TrainerStatus.TRAINING_COMPLETE
             if self._rounds_exhausted()
@@ -493,6 +587,8 @@ class Trainer:
         self._last_error = "".join(
             traceback.format_exception(type(exc), exc, exc.__traceback__)
         )
+        log.error("training round failed: %s: %s",
+                  type(exc).__name__, exc)
         self._status = (
             TrainerStatus.FAILED if self.config.stop_on_failure else self._idle_status()
         )

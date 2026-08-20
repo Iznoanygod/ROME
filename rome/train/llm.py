@@ -1,10 +1,10 @@
 """LLM GRPO trainer task.
 
-One of the two trainers shipped with ROME-A (the other being ProteinMPNN).
-Together they are the demonstration that "adding new models and training
-algorithms requires just one task": everything below this line is TRL-specific,
-and nothing above it — the data manager, the training manager, the stream
-manager — knows that an LLM is involved.
+The trainer shipped with the framework (the ProteinMPNN trainer lives with the
+IMPRESS-R example, ``examples/impress_r/mpnn.py``). It is the demonstration that
+"adding new models and training algorithms requires just one task": everything
+below this line is TRL-specific, and nothing above it — the data manager, the
+training manager, the stream manager — knows that an LLM is involved.
 
 The task takes the dataset the data manager built, runs TRL's GRPO over it, and
 writes a checkpoint (a LoRA adapter when one is configured, otherwise the full

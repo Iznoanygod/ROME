@@ -177,6 +177,31 @@ ROME-A manager. Either build the engine yourself first and hand it to both, or
 let ROME-A build its own. Both paths are covered by
 `tests/integration/test_impress_r.py`.
 
+### The training round runs as a command, in its own process
+
+ROME-A submits a ProteinMPNN round the way IMPRESS submits `mpnn_wrapper.py`: as
+an **executable task**, not a Python function pickled into a worker.
+`ProteinMPNNTrainer.as_command` stages the round's structures, writes a
+self-contained job spec, and returns
+
+```
+python examples/impress_r/mpnn_train_wrapper.py --job <output_dir>/train_job.json
+```
+
+which the manager runs on the backend with `{"gpus_per_rank": 1}`. Two
+consequences matter for a campaign:
+
+* the fine-tune is a **separate process on its own GPU** — nothing about it lives
+  in the campaign driver, and the process exits when the round ends, so its VRAM
+  is released rather than held for the whole run;
+* `examples/impress_r/mpnn_train_wrapper.py` is dragon-free and runnable on its own, so a
+  failing round can be reproduced by hand from the `train_job.json` the manager
+  left behind.
+
+Point `ProteinMPNNConfig.train_script` at a copy of the wrapper staged elsewhere
+on the cluster if the bundled path is not reachable from the compute node, and
+supply any environment `pre_exec` through `TrainerConfig.task_description`.
+
 ### Other seams worth knowing
 
 * **`auto_register_task(local_task=True)` leaves the function alone** instead of
@@ -185,6 +210,75 @@ let ROME-A build its own. Both paths are covered by
 * **`PipelineSetup(kwargs={...})`** passes arbitrary configuration through to
   the pipeline constructor, which is how the example threads `base_path`
   through.
+
+### Seeing what ROME-A is doing — logging that matches IMPRESS
+
+ROME-A schedules its training out of the campaign's sight, so it logs its own
+lifecycle to stdout in the same shape as IMPRESS's `ImpressLogger` — the lines
+sit right alongside the `[PIPELINE-P1]` ones in a single run:
+
+```
+14:28:32.007 [INFO] [ROME-DATA]    received design 8oep1234 (score=95) — corpus 8 (4 unconsumed)
+14:28:33.114 [INFO] [ROME-TRAINER] submitting training round 1 (8 designs, ProteinMPNNTrainer) -> v1
+14:28:58.512 [INFO] [ROME-MODEL]   published v1 (8 designs) -> .../v_48_020.pt
+14:28:58.520 [INFO] [ROME-STREAM]  generate[0] reloaded weights -> v1 (v_48_020.pt)
+```
+
+The events the components emit at `INFO`:
+
+* `[ROME-DATA]` — every design received into the corpus (and, at `DEBUG`, every
+  one rejected by a filter or as a duplicate);
+* `[ROME-TRAINER]` — each training round submitted, and any round that failed
+  (`ERROR`);
+* `[ROME-MODEL]` — each new checkpoint published (the "creates a new model"
+  event), green like IMPRESS's `checkpoint`;
+* `[ROME-STREAM]` — a stream group starting, and a replica reloading weights;
+* `[ROME-MANAGER]` — start and stop.
+
+Three environment variables tune it, no code change:
+
+* `ROME_LOG_LEVEL` — `INFO` (default), `DEBUG` for per-record accept/reject
+  detail, `WARNING` to quiet the lifecycle lines.
+* `ROME_LOG_COLOR=0` — drop the ANSI colour (also dropped when `NO_COLOR` is
+  set). On by default, since Dragon captures a non-tty stdout.
+
+It matches IMPRESS's *format* without importing IMPRESS, so the same logging
+works in a workflow that has nothing to do with IMPRESS. If an application
+configures the `rome` logger itself, ROME-A leaves it alone.
+
+### `post_exec` only runs on RadicalExecutionBackend — the empty `af_stats` trap
+
+The protein-binding pipeline selects AlphaFold's best model in the AF task's
+**`post_exec`**:
+
+```python
+"post_exec": [
+    f"cp {models_path}/*ranked_0*.pdb {best_model_pdb}",       # -> best_models/
+    f"cp {models_path}/*ranking_debug*.json {best_ptm_json}",  # -> best_ptm/
+    f"cp {models_path}/*ranked_0*.pdb {mpnn_pdb}",
+]
+```
+
+`pre_exec`/`post_exec`/`output_staging` are **RADICAL-Pilot** task-description
+features. The upstream `run_protein_binding.py` runs on `RadicalExecutionBackend`,
+where they execute. On `LocalExecutionBackend` or the Dragon backend — the only
+options on current asyncflow, since `RadicalExecutionBackend` is 0.2.0 only —
+**`post_exec` is silently ignored**. So AlphaFold fills `dimer_models/` but
+nothing copies the ranked model into `best_models/`/`best_ptm/`, and
+`plddt_extract_pipeline.py` — whose outer loop is `for files in
+os.listdir(best_models)` — writes a **header-only `af_stats` CSV**. Three
+symptoms, one cause: `dimer_models` populated, `best_models`/`best_ptm` empty,
+`af_stats` empty.
+
+Two remedies:
+
+* **Already-run campaign:** `scripts/populate_best_models.py` does the copies
+  from an existing `dimer_models/`, so you can re-run the extractor without
+  re-running AlphaFold. It also prints a target's contents when there is no
+  `ranked_0` PDB, which distinguishes an AlphaFold run from a Boltz/other one.
+* **New runs:** `examples/impress_r/protein_binding_rome.py` uses
+  `ProteinBindingPipelineR`, which folds the copies into the AF task's own shell
+  command with `&&` so they run on any backend, right after AlphaFold.
 
 
 ---

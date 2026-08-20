@@ -28,7 +28,6 @@ dependencies = [
     "peft",
     "trl",
     "datasets",
-    "biopython==1.80",
     "radical.asyncflow",
     "rhapsody-py[radical_pilot]",
     'rhapsody-py[dragon]; python_version >= "3.10" and python_version <= "3.12"',

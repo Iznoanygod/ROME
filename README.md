@@ -31,7 +31,7 @@ model.
 
 ```python
 import rome
-from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
+from examples.impress_r.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
 
 manager = rome.Manager(
     asyncflow,                                  # your existing WorkflowEngine
@@ -91,7 +91,7 @@ rome.TrainerConfig(trainer=MyTrainer(gpus=4, nodes=2))
 A bare `(dataset, output_dir, **kwargs) -> checkpoint_path` function works too —
 it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME-A:
 `rome.train.llm.GRPOTrainer` (TRL/GRPO for LLMs) and
-`rome.train.mpnn.ProteinMPNNTrainer` (IMPRESS-R).
+`examples.impress_r.mpnn.ProteinMPNNTrainer` (IMPRESS-R).
 
 ### Runtime
 
@@ -123,11 +123,17 @@ added inside `adaptive_fn` — `add_training_data` to contribute a generation's
 designs, `get_current_model` to collect the improved model — and the
 `DummyTrainer` running a round on its own once enough designs arrive. Start here.
 
-`examples/impress_r/adaptive_rome.py` is the same seam on a real
-protein-binding pipeline: a real `ImpressManager`, designs in, improved MPNN
-weights out for the next pass, and IMPRESS's `run()` never mentioning ROME-A.
-`docs/impress.md` covers installing IMPRESS from the `archive/ipdps_pdz_usecase`
-branch and both halves of the integration.
+`examples/impress_r/protein_binding_rome.py` is the real campaign:
+IMPRESS's own `run_protein_binding.py` driving the real `ProteinBindingPipeline`
+(MPNN → AlphaFold → pLDDT extraction, the migration logic, all of it), with the
+two ROME-A calls added inside `adaptive_decision` and nothing else changed. It
+fine-tunes ProteinMPNN and publishes the new weights back into the checkout so
+the next pass runs them. Run it from the usecase directory on Delta; the hook
+wiring is covered offline by `tests/unit/test_impress_r_hooks.py`.
+
+`examples/impress_r/adaptive_rome.py` is the same seam with the executables
+stubbed, so it runs anywhere. `docs/impress.md` covers installing IMPRESS from
+the `archive/ipdps_pdz_usecase` branch and both halves of the integration.
 
 `docs/proteinmpnn_training.md` covers the trainer: it fine-tunes the **original
 `dauparas/ProteinMPNN`** — the same implementation IMPRESS runs — on the
