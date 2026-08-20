@@ -185,7 +185,7 @@ an **executable task**, not a Python function pickled into a worker.
 self-contained job spec, and returns
 
 ```
-python rome/train/mpnn_wrapper.py --job <output_dir>/train_job.json
+python examples/impress_r/mpnn_train_wrapper.py --job <output_dir>/train_job.json
 ```
 
 which the manager runs on the backend with `{"gpus_per_rank": 1}`. Two
@@ -194,7 +194,7 @@ consequences matter for a campaign:
 * the fine-tune is a **separate process on its own GPU** — nothing about it lives
   in the campaign driver, and the process exits when the round ends, so its VRAM
   is released rather than held for the whole run;
-* `rome/train/mpnn_wrapper.py` is dragon-free and runnable on its own, so a
+* `examples/impress_r/mpnn_train_wrapper.py` is dragon-free and runnable on its own, so a
   failing round can be reproduced by hand from the `train_job.json` the manager
   left behind.
 

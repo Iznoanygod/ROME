@@ -5,9 +5,9 @@ staging, the manifest, the checkpoint format, and building the command + job
 spec (`as_command`) — turns a ROME-A corpus into what the original
 ``dauparas/ProteinMPNN`` fine-tuning loop consumes and publishes, and needs
 nothing but the standard library plus pandas. The *training* half
-(`rome.train.mpnn_wrapper.run_round`) imports torch and the ProteinMPNN checkout
-and runs on a GPU; it is not reachable here and is covered in
-``tests/integration/test_mpnn_train_real.py``.
+(`examples.impress_r.mpnn_train_wrapper.run_round`) imports torch and the
+ProteinMPNN checkout and runs on a GPU; it is not reachable here and is covered
+in ``tests/integration/test_mpnn_train_real.py``.
 
 These answer the questions a campaign operator actually has:
 
@@ -24,7 +24,7 @@ import os
 import pandas as pd
 import pytest
 
-from rome.train.mpnn import (
+from examples.impress_r.mpnn import (
     DEFAULT_CONTEXT_CHAINS,
     DEFAULT_DESIGN_CHAINS,
     ProteinMPNNConfig,
@@ -229,7 +229,7 @@ def test_as_command_returns_a_wrapper_invocation_and_a_checkpoint_path(tmp_path)
 
     # It is a command line running our wrapper on a JSON job — not a closure.
     assert command.startswith(sys.executable)
-    assert command.split()[1].endswith("mpnn_wrapper.py")
+    assert command.split()[1].endswith("mpnn_train_wrapper.py")
     job_path = command.split("--job")[1].strip()
     assert os.path.isfile(job_path)
     # The checkpoint path is where IMPRESS's next pass loads weights from.

@@ -2,9 +2,13 @@
 
 Adding one is a single task: subclass :class:`~rome.train.base.TrainTask`,
 implement ``train(dataset, output_dir) -> checkpoint_path``, and hand the
-instance to a :class:`~rome.trainer.TrainerConfig`. The trainers here are
-imported lazily so a protein workflow never pays for TRL, and an LLM workflow
-never needs pyarrow.
+instance to a :class:`~rome.trainer.TrainerConfig`. The LLM/GRPO trainer here is
+imported lazily so a workflow that does not use it never pays for TRL.
+
+The ProteinMPNN trainer is *not* here: it is an IMPRESS-R integration, not
+framework core, so it ships with that example —
+``examples/impress_r/mpnn.py`` (``from examples.impress_r.mpnn import
+ProteinMPNNTrainer, ProteinMPNNConfig``).
 """
 
 from rome.train.base import FunctionTrainer, TrainTask
@@ -15,16 +19,12 @@ __all__ = [
     "GRPOTrainer",
     "GRPOConfig",
     "ModelConfig",
-    "ProteinMPNNTrainer",
-    "ProteinMPNNConfig",
 ]
 
 _LAZY = {
     "GRPOTrainer": "rome.train.llm",
     "GRPOConfig": "rome.train.llm",
     "ModelConfig": "rome.train.llm",
-    "ProteinMPNNTrainer": "rome.train.mpnn",
-    "ProteinMPNNConfig": "rome.train.mpnn",
 }
 
 

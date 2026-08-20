@@ -1,6 +1,6 @@
 """Real ProteinMPNN fine-tune, end to end — gated on torch + a checkout.
 
-This runs :func:`rome.train.mpnn_wrapper.run_round` for real: parse a dimer,
+This runs :func:`examples.impress_r.mpnn_train_wrapper.run_round` for real: parse a dimer,
 fine-tune the training ``ProteinMPNN`` with the repo's own ``featurize`` /
 ``loss_smoothed`` / ``NoamOpt``, publish an original-format checkpoint, and load
 it back into the *inference* ``ProteinMPNN`` (``protein_mpnn_run.py``'s model).
@@ -62,7 +62,7 @@ def _repo_complex_pdb():
 
 
 def test_real_finetune_publishes_an_inference_loadable_checkpoint(tmp_path):
-    from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
+    from examples.impress_r.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
 
     pdb, chains = _repo_complex_pdb()
     records = [{"uid": f"d{i}", "path": pdb, "sequence": "",
@@ -100,7 +100,7 @@ def test_real_finetune_publishes_an_inference_loadable_checkpoint(tmp_path):
 
 
 def test_wrapper_runs_as_a_subprocess_the_way_the_manager_submits_it(tmp_path):
-    """The production path: as_command -> `python mpnn_wrapper.py --job ...`.
+    """The production path: as_command -> `python mpnn_train_wrapper.py --job ...`.
 
     This is what the training manager actually submits (an executable task), so
     it runs the wrapper as a real subprocess and checks the checkpoint it wrote
@@ -110,7 +110,7 @@ def test_wrapper_runs_as_a_subprocess_the_way_the_manager_submits_it(tmp_path):
     import shlex
     import subprocess
 
-    from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
+    from examples.impress_r.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
 
     pdb, chains = _repo_complex_pdb()
     records = [{"uid": f"d{i}", "path": pdb, "sequence": "", "backbone_id": "t"}
@@ -145,7 +145,7 @@ def test_wrapper_runs_as_a_subprocess_the_way_the_manager_submits_it(tmp_path):
 
 
 def test_second_round_resumes_and_advances_the_schedule(tmp_path):
-    from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
+    from examples.impress_r.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
 
     pdb, chains = _repo_complex_pdb()
     records = [{"uid": "d0", "path": pdb, "sequence": "", "backbone_id": "t"}]

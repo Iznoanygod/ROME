@@ -31,7 +31,7 @@ model.
 
 ```python
 import rome
-from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
+from examples.impress_r.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
 
 manager = rome.Manager(
     asyncflow,                                  # your existing WorkflowEngine
@@ -91,7 +91,7 @@ rome.TrainerConfig(trainer=MyTrainer(gpus=4, nodes=2))
 A bare `(dataset, output_dir, **kwargs) -> checkpoint_path` function works too —
 it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME-A:
 `rome.train.llm.GRPOTrainer` (TRL/GRPO for LLMs) and
-`rome.train.mpnn.ProteinMPNNTrainer` (IMPRESS-R).
+`examples.impress_r.mpnn.ProteinMPNNTrainer` (IMPRESS-R).
 
 ### Runtime
 

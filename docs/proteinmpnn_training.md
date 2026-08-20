@@ -127,12 +127,12 @@ as an **executable task**. `ProteinMPNNTrainer.as_command(dataset, output_dir)`
 stages the round's structures, writes a self-contained job spec
 (`<output_dir>/train_job.json`), and returns a command line:
 
-    python rome/train/mpnn_wrapper.py --job <output_dir>/train_job.json
+    python examples/impress_r/mpnn_train_wrapper.py --job <output_dir>/train_job.json
 
 The training manager runs *that* on the execution backend (with
 `{"gpus_per_rank": 1}`), so the fine-tune is a separate process on its own GPU —
 nothing about it lives in the manager's address space, and the process exits
-when the round ends, releasing its VRAM. `rome/train/mpnn_wrapper.py` is
+when the round ends, releasing its VRAM. `examples/impress_r/mpnn_train_wrapper.py` is
 deliberately dragon-free (it imports only the standard library, torch, and the
 checkout named in the job), so you can run and debug it on its own. Point
 `config.train_script` at a copy staged elsewhere on the cluster if the bundled
@@ -142,7 +142,7 @@ checkout). A `pre_exec` to activate the environment can be supplied through
 
 ## 7. How the loop is built, and that it is verified
 
-The loop lives in **one** place — `rome.train.mpnn_wrapper.run_round` — which
+The loop lives in **one** place — `examples/impress_r/mpnn_train_wrapper.py`’s `run_round` — which
 the command and the in-process `train()` path (used by the tests) both call, so
 there is no second copy to drift. It does **not** reimplement anything: it
 imports the checkout's own training modules and reproduces

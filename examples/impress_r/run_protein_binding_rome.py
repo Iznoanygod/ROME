@@ -15,7 +15,20 @@ from impress import ImpressManager
 from impress.pipelines.protein_binding import ProteinBindingPipeline
 
 import rome
-from rome.train.mpnn import percentile_sampler
+
+# The ProteinMPNN trainer ships with this example (mpnn.py, beside the inference
+# mpnn_wrapper.py), not with the framework. Import it whether this file is run as
+# a script from inside the example dir or imported as examples.impress_r.*.
+try:
+    from examples.impress_r.mpnn import (
+        ProteinMPNNConfig,
+        ProteinMPNNTrainer,
+        percentile_sampler,
+    )
+except ModuleNotFoundError:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from mpnn import ProteinMPNNConfig, ProteinMPNNTrainer, percentile_sampler
 
 # The dauparas/ProteinMPNN checkout IMPRESS runs (the same `-mpnn` path). Set
 # ROME_MPNN_REPO to it for a real training round.
@@ -195,8 +208,6 @@ def _build_trainer(checkpoint_dir: str):
     """
     want = os.environ.get('ROME_TRAINER', 'mpnn').lower()
     if want == 'mpnn' and os.path.isdir(MPNN_REPO):
-        from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
-
         return ProteinMPNNTrainer(ProteinMPNNConfig(
             mpnn_repo=MPNN_REPO,
             initial_weights=os.path.join(MPNN_REPO, 'vanilla_model_weights', 'v_48_020.pt'),

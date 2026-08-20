@@ -16,7 +16,7 @@ model. Nothing in the host workflow has to orchestrate that.
 Typical adoption::
 
     rome = Manager(asyncflow=flow, data_config=DataConfig(min_samples=64),
-                   trainer_config=TrainerConfig(trainer=ProteinMPNNTrainer()))
+                   trainer_config=TrainerConfig(trainer=my_trainer))
     await rome.start()
 
     ...                                   # the workflow runs unchanged

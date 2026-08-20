@@ -355,7 +355,7 @@ and the first needs nothing up front.
 **Rank instead of threshold (recommended for a first run).**
 
 ```python
-from rome.train.mpnn import percentile_sampler
+from examples.impress_r.mpnn import percentile_sampler
 
 rome.DataConfig(
     min_samples=24,

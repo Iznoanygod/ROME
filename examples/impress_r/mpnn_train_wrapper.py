@@ -6,17 +6,20 @@ way IMPRESS submits ``mpnn_wrapper.py`` for inference rather than calling a Pyth
 function inside the campaign process. The manager stages the round's structures,
 writes a self-contained job spec (a JSON file), and runs::
 
-    python rome/train/mpnn_wrapper.py --job <job.json>
+    python examples/impress_r/mpnn_train_wrapper.py --job <job.json>
 
 The round therefore executes in its *own* process on its own GPU: nothing about
 the fine-tune lives in the manager's address space, and the process exits when
 the round finishes, so the CUDA context and the model are released with it.
 
-The file is deliberately dragon-free — it imports only the standard library,
-torch, and the ``dauparas/ProteinMPNN`` checkout named in the job — so it can be
-run and debugged on its own, exactly like ``mpnn_wrapper.py``. It is also the
-single source of truth for the training loop: ``rome.train.mpnn`` imports
-:func:`run_round` for the in-process path, so there is only one copy of the loop.
+It sits beside the inference wrapper (``mpnn_wrapper.py``) it complements, in the
+IMPRESS-R example rather than in the framework — the trainer is an integration,
+and ROME-A itself is workflow-agnostic. The file is deliberately dragon-free — it
+imports only the standard library, torch, and the ``dauparas/ProteinMPNN``
+checkout named in the job — so it can be run and debugged on its own, exactly
+like ``mpnn_wrapper.py``. It is also the single source of truth for the training
+loop: ``mpnn.py`` imports :func:`run_round` for the in-process path, so there is
+only one copy of the loop.
 
 Job spec (all keys written by ``ProteinMPNNTrainer``)::
 

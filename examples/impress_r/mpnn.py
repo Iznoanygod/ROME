@@ -24,17 +24,23 @@ what ProteinMPNN's chain mask expresses, and :func:`build_chain_designation`
 sets it up: designed chains are predicted, context chains are visible but not
 scored.
 
+This trainer is an IMPRESS-R *integration*, not framework core — ROME-A is
+workflow-agnostic — so it lives with the example, beside the inference wrapper
+(``mpnn_wrapper.py``) it complements. Import it from here::
+
+    from examples.impress_r.mpnn import ProteinMPNNTrainer, ProteinMPNNConfig
+
 **Runs as a command, not a function.** Like IMPRESS — which submits
 ``mpnn_wrapper.py`` as a shell command rather than calling ProteinMPNN in the
 campaign process — the training manager submits this round as an *executable
 task*: :meth:`ProteinMPNNTrainer.as_command` stages the structures, writes a
-self-contained job spec, and returns ``python rome/train/mpnn_wrapper.py --job
+self-contained job spec, and returns ``python mpnn_train_wrapper.py --job
 <job.json>``. The fine-tune therefore runs in its own process on its own GPU,
 and that process exits when the round finishes, so its VRAM is released with it.
 
-The training loop itself lives in :func:`rome.train.mpnn_wrapper.run_round` —
-one dragon-free copy, so the standalone script and the in-process path (a direct
-:meth:`train` call, used by the tests) share it. It mirrors
+The training loop itself lives in ``mpnn_train_wrapper.run_round`` (the sibling
+script) — one dragon-free copy, so the standalone script and the in-process path
+(a direct :meth:`train` call, used by the tests) share it. It mirrors
 ``training/training.py``'s inner loop using the repo's own ``featurize``,
 ``loss_smoothed``, ``NoamOpt`` and training ``ProteinMPNN``, verified end to end
 against a real checkout and the public ``v_48_020`` weights — the loss runs on
@@ -53,6 +59,25 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from rome.train.base import TrainTask
+
+
+def _load_run_round():
+    """Import ``run_round`` from the sibling ``mpnn_train_wrapper``.
+
+    Works whether this module was imported as ``examples.impress_r.mpnn`` (the
+    test/package path) or as a bare ``mpnn`` (a script run from inside the
+    example directory): the wrapper sits next to this file, so its directory is
+    put on ``sys.path`` and it is imported by name. Lazy — only the in-process
+    :meth:`ProteinMPNNTrainer.train` path needs it; the command path never
+    imports the wrapper here, it runs it as a subprocess.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from mpnn_train_wrapper import run_round  # type: ignore
+
+    return run_round
+
 
 #: ProteinMPNN's amino-acid alphabet (index -> letter). Position 20 is ``X``.
 MPNN_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
@@ -289,8 +314,9 @@ class ProteinMPNNConfig:
     manifest_dir: Optional[str] = None
     train_func: Optional[Callable[..., str]] = None
     #: The wrapper script the round is submitted as a command to run. Defaults to
-    #: the bundled ``rome/train/mpnn_wrapper.py``; override to point at a copy
-    #: staged elsewhere on the cluster (as IMPRESS points ``-mpnn`` at its own).
+    #: the sibling ``examples/impress_r/mpnn_train_wrapper.py``; override to point
+    #: at a copy staged elsewhere on the cluster (as IMPRESS points ``-mpnn`` at
+    #: its own checkout).
     train_script: Optional[str] = None
 
     def validate(self) -> None:
@@ -424,9 +450,9 @@ class ProteinMPNNTrainer(TrainTask):
 
         Stages the round's structures, writes a self-contained job spec, and
         returns ``(command, checkpoint_path)`` where ``command`` runs
-        :mod:`rome.train.mpnn_wrapper` on that spec. The training manager runs it
-        as an *executable task*, so the fine-tune is a separate process on its own
-        GPU rather than a function in the manager's address space.
+        ``mpnn_train_wrapper.py`` on that spec. The training manager runs it as an
+        *executable task*, so the fine-tune is a separate process on its own GPU
+        rather than a function in the manager's address space.
 
         Returns ``None`` when ``config.train_func`` is set — a custom loop is
         Python, not a command, so it runs in-process through :meth:`train`.
@@ -441,7 +467,7 @@ class ProteinMPNNTrainer(TrainTask):
             json.dump(job, fd, indent=2)
 
         script = self.config.train_script or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "mpnn_wrapper.py"
+            os.path.dirname(os.path.abspath(__file__)), "mpnn_train_wrapper.py"
         )
         command = f"{sys.executable} {script} --job {job_path}"
         return command, target
@@ -453,7 +479,7 @@ class ProteinMPNNTrainer(TrainTask):
         through :meth:`as_command` instead. Kept because a workflow (or a test)
         may want to run a round synchronously, and because ``config.train_func``
         plugs in here. It shares the exact loop the command runs, via
-        :func:`rome.train.mpnn_wrapper.run_round`.
+        ``mpnn_train_wrapper.run_round``.
 
         ``kwargs`` carries ``model_version`` from the training manager and
         ``model_path`` when a previous round published one.
@@ -465,8 +491,7 @@ class ProteinMPNNTrainer(TrainTask):
             return self.config.train_func(manifest_path, output_dir, self.config) \
                 or output_dir
 
-        from rome.train.mpnn_wrapper import run_round
-
+        run_round = _load_run_round()
         job, _target = self._build_job(records, output_dir, **kwargs)
         return run_round(job)
 
@@ -478,7 +503,7 @@ class ProteinMPNNTrainer(TrainTask):
         (a campaign overwrites ``{target}.pdb`` pass to pass), and the chain
         designation is resolved here — on the manager side, where the corpus and
         the config live — so the wrapper only has to parse and train. Returns
-        ``(job, target_weights_path)``; see :mod:`rome.train.mpnn_wrapper` for
+        ``(job, target_weights_path)``; see ``mpnn_train_wrapper`` for
         the spec.
         """
         cfg = self.config
@@ -580,7 +605,7 @@ def score_percentiles(
     share a scale — so the only safe way to set one is to look at what *this*
     campaign is producing::
 
-        from rome.train.mpnn import score_percentiles
+        from examples.impress_r.mpnn import score_percentiles
         print(score_percentiles(manager.data.get_records()))
 
     Returns ``{key: {"n", "min", "p10", "p25", "median", "p75", "p90", "max"}}``,
