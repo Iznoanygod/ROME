@@ -1,9 +1,11 @@
 """Real ProteinMPNN fine-tune, end to end — gated on torch + a checkout.
 
-This runs :meth:`ProteinMPNNTrainer._train_with_proteinmpnn` for real: parse a
-dimer, fine-tune the training ``ProteinMPNN`` with the repo's own ``featurize`` /
+This runs :func:`rome.train.mpnn_wrapper.run_round` for real: parse a dimer,
+fine-tune the training ``ProteinMPNN`` with the repo's own ``featurize`` /
 ``loss_smoothed`` / ``NoamOpt``, publish an original-format checkpoint, and load
 it back into the *inference* ``ProteinMPNN`` (``protein_mpnn_run.py``'s model).
+It exercises both the in-process ``train()`` path and the wrapper run as a
+subprocess the way the manager submits it (``as_command``).
 
 It needs torch and a ``dauparas/ProteinMPNN`` checkout, so it skips unless both
 are present. Point it at the checkout IMPRESS runs::
@@ -90,6 +92,51 @@ def test_real_finetune_publishes_an_inference_loadable_checkpoint(tmp_path):
     sys.path.insert(0, REPO)
     import importlib
 
+    inf = importlib.import_module("protein_mpnn_utils")
+    model = inf.ProteinMPNN(num_letters=21, node_features=128, edge_features=128,
+                            hidden_dim=128, num_encoder_layers=3,
+                            num_decoder_layers=3, k_neighbors=48, augment_eps=0.2)
+    model.load_state_dict(state["model_state_dict"])   # raises if incompatible
+
+
+def test_wrapper_runs_as_a_subprocess_the_way_the_manager_submits_it(tmp_path):
+    """The production path: as_command -> `python mpnn_wrapper.py --job ...`.
+
+    This is what the training manager actually submits (an executable task), so
+    it runs the wrapper as a real subprocess and checks the checkpoint it wrote
+    reloads into the inference model — proving the round works out-of-process,
+    with nothing about the fine-tune living in the caller.
+    """
+    import shlex
+    import subprocess
+
+    from rome.train.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer
+
+    pdb, chains = _repo_complex_pdb()
+    records = [{"uid": f"d{i}", "path": pdb, "sequence": "", "backbone_id": "t"}
+               for i in range(2)]
+    cfg = ProteinMPNNConfig(
+        mpnn_repo=REPO,
+        initial_weights=os.path.join(REPO, "vanilla_model_weights", "v_48_020.pt"),
+        model_name="v_48_020", publish_into_repo=False, max_epochs=1, device="cpu",
+        chains_func=lambda rec, present: ([chains[0]], chains[1:]),
+    )
+    trainer = ProteinMPNNTrainer(cfg)
+    outdir = str(tmp_path / "v1")
+    os.makedirs(outdir)
+
+    command, checkpoint = trainer.as_command(records, outdir, model_version=1)
+    result = subprocess.run(shlex.split(command), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == checkpoint   # printed path
+    assert os.path.isfile(checkpoint)
+
+    state = torch.load(checkpoint, map_location="cpu")
+    assert state["num_edges"] == 48 and "model_state_dict" in state
+
+    import importlib
+    import sys
+    sys.path.insert(0, REPO)
     inf = importlib.import_module("protein_mpnn_utils")
     model = inf.ProteinMPNN(num_letters=21, node_features=128, edge_features=128,
                             hidden_dim=128, num_encoder_layers=3,

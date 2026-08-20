@@ -1,12 +1,13 @@
 """ProteinMPNN trainer: everything reachable without torch or a GPU.
 
 The trainer has two halves. The *data* half — validate, chain designation,
-staging, the manifest, the checkpoint format — turns a ROME-A corpus into what
-the original ``dauparas/ProteinMPNN`` fine-tuning loop consumes and publishes,
-and needs nothing but the standard library plus pandas. The *training* half
-(`_train_with_proteinmpnn`) imports torch and the ProteinMPNN checkout and runs
-on a GPU; it is not reachable here and is covered only by being isolated behind
-``train_func``.
+staging, the manifest, the checkpoint format, and building the command + job
+spec (`as_command`) — turns a ROME-A corpus into what the original
+``dauparas/ProteinMPNN`` fine-tuning loop consumes and publishes, and needs
+nothing but the standard library plus pandas. The *training* half
+(`rome.train.mpnn_wrapper.run_round`) imports torch and the ProteinMPNN checkout
+and runs on a GPU; it is not reachable here and is covered in
+``tests/integration/test_mpnn_train_real.py``.
 
 These answer the questions a campaign operator actually has:
 
@@ -207,3 +208,77 @@ def test_weights_land_where_impress_will_load_them(tmp_path):
                             publish_into_repo=True)
     assert published_weights_path(cfg, str(tmp_path / "r")) == \
         os.path.join(repo, "vanilla_model_weights", "v_48_020.pt")
+
+
+# --- runs as a command, not a pickled function (the IMPRESS pattern) ---------
+
+def test_as_command_returns_a_wrapper_invocation_and_a_checkpoint_path(tmp_path):
+    """The round is submitted as `python mpnn_wrapper.py --job <spec>`."""
+    import sys
+
+    repo = str(tmp_path / "ProteinMPNN")
+    cfg = ProteinMPNNConfig(mpnn_repo=repo,
+                            initial_weights=str(tmp_path / "v_48_020.pt"),
+                            publish_into_repo=True)
+    trainer = ProteinMPNNTrainer(cfg)
+    outdir = str(tmp_path / "round")
+    os.makedirs(outdir)
+
+    command, checkpoint = trainer.as_command(
+        [_design(tmp_path, "d1"), _design(tmp_path, "d2")], outdir, model_version=1)
+
+    # It is a command line running our wrapper on a JSON job — not a closure.
+    assert command.startswith(sys.executable)
+    assert command.split()[1].endswith("mpnn_wrapper.py")
+    job_path = command.split("--job")[1].strip()
+    assert os.path.isfile(job_path)
+    # The checkpoint path is where IMPRESS's next pass loads weights from.
+    assert checkpoint == published_weights_path(cfg, outdir)
+
+
+def test_as_command_job_spec_carries_designs_hyperparams_and_resume(tmp_path):
+    """The wrapper is self-contained: the job spec has everything it needs."""
+    import json
+
+    repo = str(tmp_path / "ProteinMPNN")
+    weights = str(tmp_path / "v_48_020.pt")
+    cfg = ProteinMPNNConfig(mpnn_repo=repo, initial_weights=weights, max_epochs=2)
+    trainer = ProteinMPNNTrainer(cfg)
+    outdir = str(tmp_path / "round")
+    os.makedirs(outdir)
+
+    command, _ = trainer.as_command(
+        [_design(tmp_path, "d1"), _design(tmp_path, "d2")], outdir)
+    job = json.load(open(command.split("--job")[1].strip()))
+
+    assert job["mpnn_repo"] == repo
+    assert job["resume_from"] == weights           # first round starts from initial
+    assert {d["name"] for d in job["designs"]} == {"d1", "d2"}
+    d1 = next(d for d in job["designs"] if d["name"] == "d1")
+    assert d1["designed_chains"] == ["A"] and d1["context_chains"] == ["B"]
+    assert os.path.isfile(d1["path"])              # structures were staged
+    assert job["hyperparams"]["max_epochs"] == 2
+    assert job["hyperparams"]["num_neighbors"] == 48
+
+
+def test_as_command_resumes_from_a_prior_round_when_given_one(tmp_path):
+    cfg = ProteinMPNNConfig(mpnn_repo=str(tmp_path / "ProteinMPNN"),
+                            initial_weights=str(tmp_path / "v_48_020.pt"))
+    trainer = ProteinMPNNTrainer(cfg)
+    outdir = str(tmp_path / "round")
+    os.makedirs(outdir)
+
+    command, _ = trainer.as_command([_design(tmp_path, "d1")], outdir,
+                                    model_path="/prev/v2.pt")
+    import json
+    job = json.load(open(command.split("--job")[1].strip()))
+    assert job["resume_from"] == "/prev/v2.pt"     # continues the prior checkpoint
+
+
+def test_as_command_is_skipped_for_a_custom_train_func(tmp_path):
+    """A custom loop is Python, not a command, so it stays in-process."""
+    cfg = ProteinMPNNConfig(train_func=lambda m, o, c: o)
+    trainer = ProteinMPNNTrainer(cfg)
+    outdir = str(tmp_path / "round")
+    os.makedirs(outdir)
+    assert trainer.as_command([_design(tmp_path, "d1")], outdir) is None

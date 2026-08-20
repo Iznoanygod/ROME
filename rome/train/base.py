@@ -14,7 +14,7 @@ so a trainer that blocks for an hour is fine.
 from __future__ import annotations
 
 import os
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 
 class TrainTask:
@@ -63,6 +63,23 @@ class TrainTask:
             ``output_dir`` itself is the common case.
         """
         raise NotImplementedError("TrainTask.train() must be implemented by subclasses")
+
+    def as_command(self, dataset: Any, output_dir: str,
+                   **kwargs: Any) -> Optional[Tuple[str, str]]:
+        """Optionally run this round as an executable task instead of a function.
+
+        Return ``(shell_command, checkpoint_path)`` to have the training manager
+        submit ``shell_command`` as an *executable* task — a subprocess on the
+        allocation's resources, the way IMPRESS submits its wrapper scripts —
+        rather than pickling :meth:`train` into a worker. ``checkpoint_path`` is
+        where the command will write the checkpoint, since an executable task's
+        return value is not the path.
+
+        Return ``None`` (the default) to run :meth:`train` in-process as a
+        function task. A GPU fine-tune should prefer the command form: the
+        subprocess exits when the round ends, releasing its VRAM.
+        """
+        return None
 
     #: Set on subclasses that want a ``datasets.Dataset`` rather than a list.
     wants_hf_dataset: bool = False

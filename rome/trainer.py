@@ -57,6 +57,26 @@ def _has_files(root: str) -> bool:
     return False
 
 
+def _round_output_ready(path: str) -> bool:
+    """Whether a round's output is on disk — a checkpoint file or a filled dir."""
+    return os.path.isfile(path) or _has_files(path)
+
+
+def _command_body(command: str):
+    """Wrap a shell command as an asyncflow executable-task body.
+
+    An executable task's body returns the command line to run; asyncflow places
+    it on the backend and runs it as a subprocess. Defined at module scope, and
+    closing over only the ``command`` string, so it pickles cleanly to a
+    multi-process backend.
+    """
+    async def run_command():
+        return command
+
+    run_command.__name__ = "rome_train_command"
+    return run_command
+
+
 class TrainerStatus(Enum):
     """Status of the ROME-A training manager.
 
@@ -321,15 +341,31 @@ class Trainer:
     async def _submit_round(self, task, dataset, output_dir, call_kwargs) -> Any:
         """Hand one training round to asyncflow.
 
-        ``TrainTask.train`` is synchronous and blocking on purpose — a
-        fine-tune should not have to be written as a coroutine — so the task
-        body runs it in a thread and awaits that. Resource requirements come
-        from the ``TrainTask`` itself, which is what keeps "adding a new
-        training algorithm requires just one task" true.
+        A trainer that implements :meth:`~rome.train.base.TrainTask.as_command`
+        is submitted as an *executable* task — a shell command that runs the
+        round in its own process, the way IMPRESS submits its wrapper scripts.
+        Otherwise the round is a *function* task: ``TrainTask.train`` is
+        synchronous and blocking on purpose, so the body runs it in a thread and
+        awaits that. Resource requirements come from the ``TrainTask`` itself,
+        which is what keeps "adding a new training algorithm requires just one
+        task" true.
         """
         description = self.config.task_description
         if description is None:
             description = resource_description(gpus=task.gpus, nodes=task.nodes)
+
+        plan = task.as_command(dataset, output_dir, **call_kwargs)
+        if plan is not None:
+            command, checkpoint = plan
+            log.info("dispatching training round as a command: %s", command)
+            self._round_fut = submit_task(
+                self.asyncflow, _command_body(command),
+                task_description=description, executable=True,
+            )
+            # An executable task's result is not the checkpoint path, so we wait
+            # for completion and then report where the command wrote it.
+            await self._await_round(self._round_fut, checkpoint)
+            return checkpoint
 
         async def train_entry():
             return await asyncio.to_thread(task.train, dataset, output_dir, **call_kwargs)
@@ -342,14 +378,16 @@ class Trainer:
         )
         return await self._await_round(self._round_fut, output_dir)
 
-    async def _await_round(self, fut: Any, output_dir: str) -> Any:
+    async def _await_round(self, fut: Any, done_path: str) -> Any:
         """Wait for a round, believing the disk if the backend goes quiet.
 
         Normally this is just ``await fut``. The fallback only engages when the
-        checkpoint has appeared on disk *and* the backend still has not resolved
-        the future ``result_fallback_seconds`` later — see
-        :class:`TrainerConfig`. A failed round still surfaces its exception,
-        because a body that raised never writes a checkpoint.
+        round's output has appeared on disk *and* the backend still has not
+        resolved the future ``result_fallback_seconds`` later — see
+        :class:`TrainerConfig`. ``done_path`` is the checkpoint file for an
+        executable round, or the round's output directory for a function round;
+        either existing means the body ran to completion. A failed round still
+        surfaces its exception, because a body that raised never writes it.
         """
         grace = self.config.result_fallback_seconds
         if grace is None:
@@ -357,21 +395,21 @@ class Trainer:
 
         # Await the future for real — the same thing the loop did before the
         # fallback existed, and what actually *drives* the task on every backend.
-        # Only if that await has not returned after `grace` seconds AND a
-        # checkpoint is already on disk do we publish from disk; otherwise keep
+        # Only if that await has not returned after `grace` seconds AND the
+        # output is already on disk do we publish from disk; otherwise keep
         # waiting. A shield keeps the timeout from cancelling the round.
         while True:
             try:
                 return await asyncio.wait_for(asyncio.shield(fut), timeout=grace)
             except asyncio.TimeoutError:
-                if _has_files(output_dir):
+                if _round_output_ready(done_path):
                     log.warning(
-                        "round %s: checkpoint is on disk but the execution "
+                        "round %s: output is on disk but the execution "
                         "backend never delivered the result after %.0fs; "
                         "publishing from disk",
-                        output_dir, grace,
+                        done_path, grace,
                     )
-                    return output_dir
+                    return done_path
 
     def _publish(self, checkpoint: str, version: int, sample_count: int) -> None:
         """Make a finished checkpoint visible to the rest of the workflow.

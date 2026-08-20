@@ -177,6 +177,31 @@ ROME-A manager. Either build the engine yourself first and hand it to both, or
 let ROME-A build its own. Both paths are covered by
 `tests/integration/test_impress_r.py`.
 
+### The training round runs as a command, in its own process
+
+ROME-A submits a ProteinMPNN round the way IMPRESS submits `mpnn_wrapper.py`: as
+an **executable task**, not a Python function pickled into a worker.
+`ProteinMPNNTrainer.as_command` stages the round's structures, writes a
+self-contained job spec, and returns
+
+```
+python rome/train/mpnn_wrapper.py --job <output_dir>/train_job.json
+```
+
+which the manager runs on the backend with `{"gpus_per_rank": 1}`. Two
+consequences matter for a campaign:
+
+* the fine-tune is a **separate process on its own GPU** — nothing about it lives
+  in the campaign driver, and the process exits when the round ends, so its VRAM
+  is released rather than held for the whole run;
+* `rome/train/mpnn_wrapper.py` is dragon-free and runnable on its own, so a
+  failing round can be reproduced by hand from the `train_job.json` the manager
+  left behind.
+
+Point `ProteinMPNNConfig.train_script` at a copy of the wrapper staged elsewhere
+on the cluster if the bundled path is not reachable from the compute node, and
+supply any environment `pre_exec` through `TrainerConfig.task_description`.
+
 ### Other seams worth knowing
 
 * **`auto_register_task(local_task=True)` leaves the function alone** instead of

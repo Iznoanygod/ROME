@@ -119,11 +119,34 @@ A round is short by design: `max_epochs=3`, batching to `batch_tokens=10000`,
 resuming from the previously published checkpoint (or `initial_weights` on round
 one) with a Noam schedule, label-smoothed NLL — the original trainer's own recipe.
 
-## 6. How the loop is built, and that it is verified
+## 6. How a round is submitted — a command, not a function
 
-`_train_with_proteinmpnn` does **not** reimplement anything. It imports the
-checkout's own training modules and reproduces `training/training.py`'s inner
-loop exactly:
+Like IMPRESS, which submits `mpnn_wrapper.py` as a shell command rather than
+calling ProteinMPNN inside the campaign process, ROME-A submits a training round
+as an **executable task**. `ProteinMPNNTrainer.as_command(dataset, output_dir)`
+stages the round's structures, writes a self-contained job spec
+(`<output_dir>/train_job.json`), and returns a command line:
+
+    python rome/train/mpnn_wrapper.py --job <output_dir>/train_job.json
+
+The training manager runs *that* on the execution backend (with
+`{"gpus_per_rank": 1}`), so the fine-tune is a separate process on its own GPU —
+nothing about it lives in the manager's address space, and the process exits
+when the round ends, releasing its VRAM. `rome/train/mpnn_wrapper.py` is
+deliberately dragon-free (it imports only the standard library, torch, and the
+checkout named in the job), so you can run and debug it on its own. Point
+`config.train_script` at a copy staged elsewhere on the cluster if the bundled
+path is not reachable from the compute node (as IMPRESS points `-mpnn` at its own
+checkout). A `pre_exec` to activate the environment can be supplied through
+`TrainerConfig.task_description`.
+
+## 7. How the loop is built, and that it is verified
+
+The loop lives in **one** place — `rome.train.mpnn_wrapper.run_round` — which
+the command and the in-process `train()` path (used by the tests) both call, so
+there is no second copy to drift. It does **not** reimplement anything: it
+imports the checkout's own training modules and reproduces
+`training/training.py`'s inner loop exactly:
 
 * `featurize`, `loss_smoothed`, `NoamOpt`, and the training `ProteinMPNN` from
   `training/model_utils.py` — note this is the *training* `ProteinMPNN`, whose
@@ -143,8 +166,11 @@ resolved residues of the designed chain only.
 `v_48_020` weights on a real multi-chain PDB, then loads the published checkpoint
 back into `protein_mpnn_utils.ProteinMPNN` (the inference model
 `protein_mpnn_run.py` uses) — proving the checkpoint is compatible — and checks a
-second round resumes and advances the Noam step. It is gated on torch and a
-checkout, so it skips in CI; run it on your allocation with::
+second round resumes and advances the Noam step. A third test runs the wrapper
+**as an actual subprocess** the way the manager submits it (`as_command` →
+`python mpnn_wrapper.py --job …`) and reloads what it wrote, proving the
+out-of-process path. All are gated on torch and a checkout, so they skip in CI;
+run them on your allocation with::
 
     ROME_MPNN_TEST_REPO=$WORK/ProteinMPNN \
       pytest tests/integration/test_mpnn_train_real.py
@@ -157,7 +183,7 @@ checkpoint format and publication path) is covered unconditionally in
 `(manifest_path, output_dir, config) -> checkpoint_path` — for a fork, or to
 bring the campaign up one layer at a time before switching the real loop on.
 
-## 7. Open items
+## 8. Open items
 
 * **Drift.** Fine-tuning only on self-generated designs pulls the model toward
   the campaign. The standard mitigation mixes in a slice of the original PDB
