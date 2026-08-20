@@ -9,16 +9,20 @@ It shows that while a long-lived **service** task is running, an ordinary
 executes and writes its output file — yet the ``asyncio.Future`` asyncflow
 returned for it never resolves. ``await`` on that future blocks forever.
 
-An executable task makes the defect unambiguous: the task is a plain shell
-command (``sh -c 'echo … > file'``). The file on disk is proof the process ran
-and exited 0; a future that is still PENDING long after is proof the completion
-was never delivered back to the driver.
+Both tasks here are plain shell commands, so there is no function-vs-executable
+variable: the *service* is ``sh -c 'touch marker; sleep …'`` submitted with
+``service=True``, and the *probe* is ``sh -c 'echo ran > file'``. A file on disk
+is proof a process ran and exited 0; a future still PENDING long after is proof
+the completion was never delivered back to the driver.
 
 The suspected mechanism (see ``test_result_delivery_dragon.py`` for the probe):
 rhapsody's monitor sweeps outstanding tasks in order and reads each one's result
 key; a still-running service task's key read *blocks* rather than raising, so
 every result behind it — including the finished executable task's — is never
-delivered.
+delivered. The Dragon backend has no service handling at all (unlike the
+RADICAL-Pilot backend, which resolves a service future when it reaches RUNNING),
+so ``service=True`` is a no-op there and the service is just a task that never
+terminates.
 
 Measured on a 4-CPU single node:
 
@@ -27,8 +31,8 @@ Measured on a 4-CPU single node:
     idle service    True              False    <- ran, never resolved
 
 Assumes the executable and the driver share a filesystem (true on one node); the
-task writes its marker to a tempdir the driver then stats. Exit status is
-non-zero if any task ran without its future resolving. Follow a Dragon run with
+tasks write markers to a tempdir the driver then stats. Exit status is non-zero
+if any task ran without its future resolving. Follow a Dragon run with
 ``dragon-cleanup-deprecated``.
 """
 
@@ -47,14 +51,15 @@ def say(m):
 
 
 async def main():
-    from dragon.data.ddict import DDict
     from radical.asyncflow import WorkflowEngine
     from rhapsody.backends import DragonExecutionBackendV3
 
     backend = await DragonExecutionBackendV3({"results_ddict_mem": 256 * 1024 ** 2})
     flow = await WorkflowEngine.create(backend=backend)
-    d = DDict(managers_per_node=1, n_nodes=1, total_mem=256 * 1024 ** 2)
-    ser = d.serialize()
+
+    workdir = tempfile.mkdtemp(prefix="exec_hang_")
+    wait_for = float(os.environ.get("RESOLVE_TIMEOUT", 45))
+    idle_secs = int(os.environ.get("SERVICE_SECS", 600))
 
     # An executable task: the body returns the shell command asyncflow runs, and
     # calling the decorated task returns a future for its completion.
@@ -62,28 +67,15 @@ async def main():
     async def shell(command, task_description={}):  # noqa: B006 - asyncflow reads this default
         return command
 
-    # A service task that only sleeps — enough to trigger the defect.
-    @flow.function_task(service=True)
-    async def idle_service(serialized, marker, task_description={}):  # noqa: B006
-        from dragon.data.ddict import DDict
+    # The same, but marked a service: it touches a marker file so the driver
+    # knows it is up, then idles for the rest of the run without terminating.
+    @flow.executable_task(service=True)
+    async def idle_service(marker, task_description={}):  # noqa: B006
+        return (
+            f"/bin/sh -c {shlex.quote(f'touch {shlex.quote(marker)}; sleep {idle_secs}')}"
+        )
 
-        DDict.attach(serialized)[marker] = "up"
-        for _ in range(6000):
-            await asyncio.sleep(0.1)
-
-    workdir = tempfile.mkdtemp(prefix="exec_hang_")
-    wait_for = float(os.environ.get("RESOLVE_TIMEOUT", 45))
-
-    async def service_up(marker, secs=30):
-        for _ in range(int(secs / 0.5)):
-            try:
-                d[marker]
-                return True
-            except Exception:
-                await asyncio.sleep(0.5)
-        return False
-
-    async def file_appears(path, secs=5):
+    async def file_appears(path, secs=30):
         for _ in range(int(secs / 0.25)):
             if os.path.isfile(path):
                 return True
@@ -106,7 +98,7 @@ async def main():
             resolved = True
         # The file is written the instant the command exits; if it is absent
         # even now, the command genuinely did not run.
-        ran = await file_appears(out)
+        ran = await file_appears(out, secs=5)
         say(f"   {label}: ran(file on disk)={ran} future_resolved={resolved}")
         return ran, resolved
 
@@ -115,9 +107,10 @@ async def main():
     say("1. executable task, nothing else running")
     results["no service"] = await probe("no service", "w1")
 
-    say("2. start an IDLE service (sleeps only), then the same executable task")
-    idle_service(ser, "svc_idle", task_description={})
-    say(f"   idle service up: {await service_up('svc_idle')}")
+    say("2. start an IDLE executable service (touch + sleep), then the same task")
+    marker = os.path.join(workdir, "svc_idle.up")
+    idle_service(marker, task_description={})
+    say(f"   idle service up: {await file_appears(marker)}")
     results["idle service"] = await probe("idle service", "w2")
 
     say("")
@@ -134,7 +127,6 @@ async def main():
     else:
         say("every executable task that ran also resolved its future")
 
-    d.destroy()
     return 1 if broken else 0
 
 
