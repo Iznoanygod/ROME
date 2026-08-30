@@ -1,0 +1,190 @@
+site_name: ROME
+site_url: https://iznoanygod.github.io/ROME/
+site_author: RADICAL Lab
+site_description: >-
+  RADICAL Optimizer for Model Enhancement — self-improving models as a component
+  you add to a workflow you already have.
+
+repo_name: Iznoanygod/ROME
+repo_url: https://github.com/Iznoanygod/ROME
+
+copyright: >-
+  Copyright &copy; 2024—Present by
+  <a target="_blank" href="https://radical.rutgers.edu">RADICAL Lab</a>
+
+theme:
+  name: material
+  features:
+    - content.code.annotate
+    - content.code.copy
+    - content.code.select
+    - content.tooltips
+    - navigation.indexes
+    - navigation.path
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - header.autohide
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+  font:
+    text: Open Sans
+    code: Roboto Mono
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      primary: blue grey
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      primary: blue grey
+      accent: deep orange
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+# Under `--strict` these become build failures, so a renamed heading or a moved
+# page cannot ship as a dead link.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+watch:
+  - mkdocs.yml
+  - README.md
+  - docs/
+  - rome/
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Iznoanygod/ROME
+
+extra_css:
+  - stylesheets/extra.css
+
+# No mermaid <script> here on purpose. Material for MkDocs renders the
+# ```mermaid fences below natively and themes the diagrams from its own palette,
+# so they follow the reader's light/dark choice. Loading mermaid from a CDN as
+# well would double-initialise it with a theme that fights Material's.
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: Iznoanygod
+      repo: ROME
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home:
+      - Overview: index.md
+      - Installation: installation.md
+      - Quickstart: quickstart.md
+  - User Guide:
+      - Adopting ROME-A: guide/adoption.md
+      - Data Manager: guide/data.md
+      - Training Manager: guide/training.md
+      - Stream Manager: guide/streams.md
+      - Writing a trainer: guide/trainers.md
+      - Logging: guide/logging.md
+  - Design:
+      - Architecture: design/architecture.md
+      - Shared state: design/state.md
+      - Execution: design/execution.md
+      - ROME-A on Dragon: dragon.md
+  - Examples:
+      - Overview: examples/index.md
+      - The dummy loop: examples/dummy-loop.md
+      - LLM + GRPO: examples/llm-grpo.md
+      - IMPRESS-R: examples/impress-r.md
+  - HPC:
+      - Setting up on Delta: delta.md
+      - Running IMPRESS: impress.md
+      - Fine-tuning ProteinMPNN: proteinmpnn_training.md
+  - API Reference:
+      - ROME: api/
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      enable_inventory: true
+      handlers:
+        python:
+          # ROME-A is a flat package at the repo root, and the IMPRESS-R trainer
+          # lives under examples/. Both are read statically by griffe, so the
+          # reference builds without Dragon, torch or a GPU installed.
+          paths: [.]
+          # The source is written in the Sphinx docstring dialect (`:meth:`,
+          # `.. warning::`). This rewrites those into Markdown as the docs are
+          # built, so the source needs no second dialect.
+          options:
+            extensions:
+              - docs/griffe_rst.py:SphinxRolesToMarkdown
+            annotations_path: brief
+            docstring_section_style: list
+            docstring_style: numpy
+            filters: ["!^_[^_]"]
+            inherited_members: yes
+            line_length: 60
+            members_order: source
+            merge_init_into_class: yes
+            separate_signature: yes
+            show_object_full_path: no
+            show_root_full_path: yes
+            show_root_heading: no
+            show_root_members_full_path: no
+            show_root_toc_entry: yes
+            show_signature_annotations: yes
+            show_submodules: no
+            show_symbol_type_heading: yes
+            show_symbol_type_toc: yes
+            signature_crossrefs: yes

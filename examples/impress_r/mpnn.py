@@ -79,28 +79,34 @@ def _load_run_round():
     return run_round
 
 
-#: ProteinMPNN's amino-acid alphabet (index -> letter). Position 20 is ``X``.
 MPNN_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
+"""ProteinMPNN's amino-acid alphabet (index -> letter). Position 20 is ``X``."""
 
-#: A corpus record must carry ``path`` — the structure file whose designed chain
-#: IS the training label. ``sequence`` is optional (ProteinMPNN reads the label
-#: out of the structure); it is kept for the manifest and for sizing.
 REQUIRED_FIELDS = ("path",)
+"""Fields a corpus record must carry.
 
-#: The IMPRESS protein-binding layout: chain A is the designed binder, chain B
-#: the fixed target peptide. Designed chains are scored; context chains are
-#: visible to the model but not scored.
+``path`` is the structure file whose designed chain IS the training label.
+``sequence`` is optional (ProteinMPNN reads the label out of the structure); it
+is kept for the manifest and for sizing.
+"""
+
 DEFAULT_DESIGN_CHAINS: Tuple[str, ...] = ("A",)
+"""Chains scored by the loss. In the IMPRESS layout, chain A is the designed binder."""
 DEFAULT_CONTEXT_CHAINS: Tuple[str, ...] = ("B",)
+"""Chains visible to the model but not scored — the fixed target peptide."""
 
-#: Architecture of the public ``v_48_020`` weights, which is what IMPRESS runs.
-#: ``protein_mpnn_run.py`` hardcodes hidden_dim=128 and 3+3 layers and reads
-#: ``k_neighbors`` back from the checkpoint's ``num_edges`` — so a fine-tune must
-#: keep these or the published checkpoint will not load.
+# Architecture of the public ``v_48_020`` weights, which is what IMPRESS runs.
+# ``protein_mpnn_run.py`` hardcodes hidden_dim=128 and 3+3 layers and reads
+# ``k_neighbors`` back from the checkpoint's ``num_edges`` — so a fine-tune must
+# keep these or the published checkpoint will not load.
 DEFAULT_NUM_NEIGHBORS = 48
+"""``k_neighbors`` of the public ``v_48_020`` weights. Read back from the checkpoint."""
 DEFAULT_HIDDEN_DIM = 128
+"""Hidden dimension ``protein_mpnn_run.py`` hardcodes."""
 DEFAULT_NUM_LAYERS = 3
+"""Encoder and decoder layers ``protein_mpnn_run.py`` hardcodes."""
 DEFAULT_BACKBONE_NOISE = 0.2
+"""Backbone noise the original training loop uses."""
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +319,13 @@ class ProteinMPNNConfig:
 
     manifest_dir: Optional[str] = None
     train_func: Optional[Callable[..., str]] = None
-    #: The wrapper script the round is submitted as a command to run. Defaults to
-    #: the sibling ``examples/impress_r/mpnn_train_wrapper.py``; override to point
-    #: at a copy staged elsewhere on the cluster (as IMPRESS points ``-mpnn`` at
-    #: its own checkout).
     train_script: Optional[str] = None
+    """The wrapper script the round is submitted as a command to run.
+
+    Defaults to the sibling ``examples/impress_r/mpnn_train_wrapper.py``;
+    override to point at a copy staged elsewhere on the cluster (as IMPRESS
+    points ``-mpnn`` at its own checkout).
+    """
 
     def validate(self) -> None:
         if not self.design_chains and self.chains_func is None:
@@ -349,8 +357,8 @@ class ProteinMPNNTrainer(TrainTask):
     until the built-in loop is validated on your ProteinMPNN checkout.
     """
 
-    #: Records are plain dicts of paths and scores, not a HuggingFace dataset.
     wants_hf_dataset = False
+    """Records are plain dicts of paths and scores, not a HuggingFace dataset."""
 
     def __init__(
         self,
@@ -639,10 +647,12 @@ def _is_number(value: Any) -> bool:
     return True
 
 
-#: Default ranking for the PDZ binder case: interface pAE down, pTM up. pLDDT is
-#: deliberately absent — in a measured campaign it never fell below 88, so it
-#: separates almost nothing.
 DEFAULT_RANK_BY = {"pAE": "low", "pTM": "high"}
+"""Default ranking for the PDZ binder case: interface pAE down, pTM up.
+
+pLDDT is deliberately absent — in a measured campaign it never fell below 88, so
+it separates almost nothing.
+"""
 
 
 def percentile_sampler(

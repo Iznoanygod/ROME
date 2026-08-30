@@ -39,6 +39,11 @@ test = [
     "pytest-mock",
 ]
 
+# Documentation dependencies are in docs/requirements.txt rather than an extra.
+# The docs build reads the source statically (mkdocstrings uses griffe, which
+# parses rather than imports), so it needs none of the runtime dependencies --
+# no Dragon, no torch, no GPU -- and an extra would drag all of them in.
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

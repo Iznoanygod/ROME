@@ -57,14 +57,16 @@ def _has_files(root: str) -> bool:
     return False
 
 
-#: Filename an executable trainer's wrapper writes into a round's ``output_dir``
-#: as its *final* action, so the driver can detect completion even when the
-#: backend never delivers the task's result. It must appear only when the round
-#: has finished writing its checkpoint — unlike the checkpoint itself, which for
-#: ``publish_into_repo`` is a stable path that already exists from the previous
-#: round (or the initial weights). Kept in sync with the wrapper scripts; see
-#: :meth:`rome.train.base.TrainTask.as_command`.
 TRAIN_COMPLETE_MARKER = "train_complete"
+"""Filename an executable trainer's wrapper writes into a round's ``output_dir``.
+
+Written as the wrapper's *final* action, so the driver can detect completion even
+when the backend never delivers the task's result. It must appear only when the
+round has finished writing its checkpoint — unlike the checkpoint itself, which
+for ``publish_into_repo`` is a stable path that already exists from the previous
+round (or the initial weights). Kept in sync with the wrapper scripts; see
+:meth:`rome.train.base.TrainTask.as_command`.
+"""
 
 
 def _round_output_ready(path: str) -> bool:

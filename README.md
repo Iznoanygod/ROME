@@ -2,6 +2,10 @@
 
 The RADICAL Optimizer for Model Enhancement (ROME).
 
+📖 **[Documentation](https://iznoanygod.github.io/ROME)** — usage guide, design
+notes and API reference. Build it locally with
+`pip install -r docs/requirements.txt && mkdocs serve`.
+
 ## ROME-A
 
 The original ROME exposed self-improvement as a workflow with three components —
@@ -171,8 +175,9 @@ rome/            ROME-A
   data.py          Data Manager
   stream.py        Stream Manager
   trainer.py       Training Manager
-  train/           trainer tasks (base, llm/GRPO, mpnn/ProteinMPNN)
+  train/           trainer tasks (base, llm/GRPO)
   utils.py         DDict layout helpers + asyncflow submission
+  dummy.py         model-free trainer and streams, for smoke tests
 oldrome/         the original ROME flows, kept for reference
 examples/        ROME-A adoption examples
 protein_generation/  IMPRESS pipeline scripts
@@ -203,3 +208,25 @@ dragon-cleanup-deprecated                         # after every Dragon run
 `docs/dragon.md` records what running on Dragon turned up — notably that a
 DDict client handle cannot be shared across threads — and the one known
 scaling limit.
+
+## Documentation
+
+The full site is built with MkDocs from `docs/`:
+
+```bash
+pip install -r docs/requirements.txt
+mkdocs serve                 # http://127.0.0.1:8000
+mkdocs build --strict        # what CI runs
+```
+
+| Section | What is in it |
+| --- | --- |
+| Home | Overview, installation, and a quickstart that runs the closed loop with no model. |
+| User Guide | One page per manager, plus writing a trainer and reading the logs. |
+| Design | Architecture, the DDict state layout, and how tasks reach the execution backend. |
+| Examples | The dummy loop, the LLM/GRPO run, and the IMPRESS-R integration. |
+| HPC | The existing Delta, IMPRESS and ProteinMPNN notes. |
+| API Reference | Generated from the source at build time, so it cannot drift. |
+
+The API reference needs none of ROME-A's runtime dependencies — mkdocstrings
+reads the source statically — so the docs build on any machine.
