@@ -2,7 +2,7 @@
 
 The RADICAL Optimizer for Model Enhancement (ROME).
 
-📖 **[Documentation](https://iznoanygod.github.io/rome)** — usage guide, design
+📖 **[Documentation](https://iznoanygod.github.io/ROME)** — usage guide, design
 notes and API reference. Build it locally with
 `pip install -r docs/requirements.txt && mkdocs serve`.
 

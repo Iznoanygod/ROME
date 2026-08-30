@@ -49,9 +49,16 @@ jobs:
         with:
           path: ./site
 
+  # Deploys on a push to main, or on demand from any branch via
+  # Actions -> Documentation -> Run workflow. The manual path is how you preview
+  # a docs branch on the live Pages URL before it is merged; note that Pages
+  # serves ONE site, so a preview deploy replaces whatever main last published
+  # until main is pushed again.
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment:
       name: github-pages

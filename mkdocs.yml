@@ -1,12 +1,12 @@
 site_name: ROME
-site_url: https://iznoanygod.github.io/rome
+site_url: https://iznoanygod.github.io/ROME/
 site_author: RADICAL Lab
 site_description: >-
   RADICAL Optimizer for Model Enhancement — self-improving models as a component
   you add to a workflow you already have.
 
-repo_name: iznoanygod/rome
-repo_url: https://github.com/iznoanygod/rome
+repo_name: Iznoanygod/ROME
+repo_url: https://github.com/Iznoanygod/ROME
 
 copyright: >-
   Copyright &copy; 2024—Present by
@@ -72,7 +72,7 @@ watch:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/iznoanygod/rome
+      link: https://github.com/Iznoanygod/ROME
 
 extra_css:
   - stylesheets/extra.css
@@ -99,8 +99,8 @@ markdown_extensions:
   - pymdownx.keys
   - pymdownx.magiclink:
       repo_url_shorthand: true
-      user: iznoanygod
-      repo: rome
+      user: Iznoanygod
+      repo: ROME
   - pymdownx.mark
   - pymdownx.smartsymbols
   - pymdownx.snippets:
