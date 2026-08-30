@@ -2,14 +2,7 @@ name: Documentation
 
 on:
   push:
-    branches:
-      - main
-      # TEMPORARY, remove when this branch merges. `workflow_dispatch` cannot
-      # cover this: GitHub only offers the "Run workflow" button for a workflow
-      # that already exists on the default branch, so a docs branch cannot be
-      # previewed on Pages until it has merged -- unless it triggers on its own
-      # push, as here.
-      - claude/rome-mkdocs-docs-ee3oos
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
