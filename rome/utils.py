@@ -21,14 +21,17 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict, Iterator, List, MutableMapping, Optional, Tuple
 
-#: Separator between namespace segments. Unlikely to appear in a uid or a name.
 SEP = "|"
+"""Separator between namespace segments. Unlikely to appear in a uid or a name."""
 
-#: Key holding the checkpoint the workflow should currently be using.
 MODEL_PATH_KEY = "model_path"
-#: Key holding the monotonically increasing checkpoint version. Stream tasks
-#: poll this to decide when to hot-swap weights.
+"""Key holding the checkpoint the workflow should currently be using."""
+
 MODEL_VERSION_KEY = "model_version"
+"""Key holding the monotonically increasing checkpoint version.
+
+Stream tasks poll this to decide when to hot-swap weights.
+"""
 
 _MISSING = object()
 

@@ -33,13 +33,16 @@ from typing import Any, Dict, List, Optional
 
 from rome.train.base import TrainTask
 
-#: What a dummy model "generates". ``{uuid}`` is a fresh UUID per output;
-#: ``{version}`` and ``{index}`` are available for callers who want the model
-#: version or the position in the batch visible in the text itself.
 DEFAULT_TEMPLATE = "model example output [{uuid}]"
+"""What a dummy model "generates".
 
-#: Filename the dummy trainer writes and the dummy model reads back.
+``{uuid}`` is a fresh UUID per output; ``{version}`` and ``{index}`` are
+available for callers who want the model version or the position in the batch
+visible in the text itself.
+"""
+
 CHECKPOINT_FILE = "checkpoint.json"
+"""Filename the dummy trainer writes and the dummy model reads back."""
 
 
 # ---------------------------------------------------------------------------
@@ -82,8 +85,8 @@ class DummyTrainer(TrainTask):
         super().__init__(gpus=gpus, nodes=nodes, name=name or "dummy")
         self.train_seconds = train_seconds
         self.fail_every = fail_every
-        #: One entry per completed round: what it trained on and for how long.
         self.rounds: List[Dict[str, Any]] = []
+        """One entry per completed round: what it trained on and for how long."""
 
     def train(self, dataset, output_dir: str, **kwargs: Any) -> str:
         """Pretend to train on ``dataset``; return the checkpoint directory."""

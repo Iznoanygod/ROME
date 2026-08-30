@@ -43,19 +43,25 @@ from rome.utils import MODEL_PATH_KEY, MODEL_VERSION_KEY, Namespace
 
 log = get_logger("rome.manager")
 
-#: Prefix isolating ROME-A's keys, so a DDict shared with the host workflow
-#: never collides with the workflow's own state.
 ROME_NS = "rome"
+"""Prefix isolating ROME-A's keys.
 
-#: Defaults for a DDict ROME-A allocates itself. Dragon's own default
-#: ``total_mem`` is 3 MiB; a campaign corpus of a few thousand records plus the
-#: stream queues goes past that, and the failure mode is an allocation error
-#: deep in a manager rather than anything ROME-A can explain, so ask for room.
+A DDict shared with the host workflow therefore never collides with the
+workflow's own state.
+"""
+
 DEFAULT_DDICT_KWARGS: Dict[str, Any] = {
     "managers_per_node": 1,
     "n_nodes": 1,
     "total_mem": 1024 ** 3,
 }
+"""Defaults for a DDict ROME-A allocates itself.
+
+Dragon's own default ``total_mem`` is 3 MiB; a campaign corpus of a few thousand
+records plus the stream queues goes past that, and the failure mode is an
+allocation error deep in a manager rather than anything ROME-A can explain, so
+ask for room.
+"""
 
 
 class Manager:

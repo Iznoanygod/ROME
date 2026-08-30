@@ -1,0 +1,49 @@
+/* ROME docs — small additions on top of Material's defaults. */
+
+:root {
+  --md-code-font: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+/* Mermaid diagrams: room to breathe. Material handles the rendering and the
+   light/dark theming itself, so nothing here should touch layout or colour. */
+.md-typeset .mermaid {
+  margin: 1.4em 0;
+}
+
+/* Wide API signatures and comparison tables should scroll inside themselves
+   rather than pushing the page sideways. */
+.md-typeset table:not([class]) {
+  display: block;
+  overflow-x: auto;
+}
+
+/* Landing-page cards. */
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.4rem;
+  transition: border-color 125ms, box-shadow 125ms;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 0 0.2rem rgba(0, 0, 0, 0.1);
+}
+
+/* mkdocstrings: make the symbol-type chips (class / func / attr) readable at a
+   glance, and keep long signatures from crowding the docstring under them. */
+.md-typeset .doc-symbol-class,
+.md-typeset .doc-symbol-function,
+.md-typeset .doc-symbol-method,
+.md-typeset .doc-symbol-attribute {
+  font-size: 0.72em;
+}
+
+.md-typeset .doc-signature {
+  margin-bottom: 0.8em;
+}
+
+/* Nested members get a left rule, so the class they belong to stays obvious
+   when a page is long. */
+.md-typeset .doc-children .doc-object {
+  border-left: 0.05rem solid var(--md-default-fg-color--lightest);
+  padding-left: 0.8rem;
+}

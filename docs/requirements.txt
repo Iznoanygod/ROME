@@ -1,0 +1,16 @@
+# Dependencies for building the ROME documentation site.
+#
+#     pip install -r docs/requirements.txt
+#     mkdocs serve
+#
+# Deliberately NOT a `[docs]` extra in pyproject.toml: an extra also installs
+# ROME's runtime dependencies (torch, Dragon via rhapsody-py, TRL), and the docs
+# build needs none of them. mkdocstrings reads the source statically through
+# griffe, so the API reference builds on any machine with just this list.
+
+mkdocs>=1.5
+mkdocs-material>=9.5
+mkdocstrings[python]>=0.26
+mkdocs-gen-files>=0.5
+mkdocs-literate-nav>=0.6
+mkdocs-section-index>=0.3

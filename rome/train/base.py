@@ -90,8 +90,8 @@ class TrainTask:
         """
         return None
 
-    #: Set on subclasses that want a ``datasets.Dataset`` rather than a list.
     wants_hf_dataset: bool = False
+    """Set on subclasses that want a ``datasets.Dataset`` rather than a list."""
 
     def validate(self, dataset: Any) -> None:
         """Raise if ``dataset`` cannot be trained on.

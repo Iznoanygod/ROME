@@ -49,20 +49,24 @@ from rome.utils import (
 
 log = get_logger(__name__)
 
-#: Sub-namespaces inside a stream group's own DDict.
 REQUEST_NS = "req"
+"""Sub-namespace holding one key per pending request, inside a group's DDict."""
 OUTPUT_NS = "out"
+"""Sub-namespace holding one key per finished result."""
 STATUS_NS = "status"
+"""Sub-namespace holding one key per replica's status."""
 
-#: Defaults for a stream group's DDict. Much smaller than the manager's,
-#: because a group only ever holds requests in flight and results not yet
-#: collected -- it does not accumulate. Override per group via
-#: ``StreamConfig.ddict_kwargs``.
 DEFAULT_STREAM_DDICT_KWARGS: Dict[str, Any] = {
     "managers_per_node": 1,
     "n_nodes": 1,
     "total_mem": 256 * 1024 ** 2,
 }
+"""Defaults for a stream group's DDict.
+
+Much smaller than the manager's, because a group only ever holds requests in
+flight and results not yet collected -- it does not accumulate. Override per
+group via :attr:`StreamConfig.ddict_kwargs`.
+"""
 
 
 class StreamStatus(Enum):
@@ -251,10 +255,10 @@ class StreamTask:
                  root: Namespace, task_fut: Any = None):
         self.index = index
         self.config = config
-        #: This stream group's slice of the DDict (requests, results, status).
         self.ddict = ddict
-        #: ROME-A's root namespace, where the published checkpoint lives.
+        """This stream group's slice of the DDict (requests, results, status)."""
         self.root = root
+        """ROME-A's root namespace, where the published checkpoint lives."""
         self.task_fut = task_fut
         self.reload_event = Event()
         self.stop_event = Event()

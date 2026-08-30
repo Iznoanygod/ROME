@@ -24,13 +24,14 @@ from rome.utils import MODEL_VERSION_KEY, Namespace
 
 _log = get_logger(__name__)
 
-#: Namespace holding one key per accepted record.
 RECORD_NS = "record"
-#: Namespace holding bookkeeping counters (consumed watermark, etc).
-META_NS = "meta"
+"""Namespace holding one key per accepted record."""
 
-#: Key under ``META_NS`` counting records already folded into a training round.
+META_NS = "meta"
+"""Namespace holding bookkeeping counters (consumed watermark, etc)."""
+
 CONSUMED_KEY = "consumed"
+"""Key under :data:`META_NS` counting records already folded into a round."""
 
 
 @dataclass
@@ -93,8 +94,8 @@ class DataConfig:
     sampling: str = "all"
     shard_size: Optional[int] = None
     consume_on_train: bool = True
-    #: Extra fields stamped onto every record (run id, campaign name, ...).
     metadata: Dict[str, Any] = field(default_factory=dict)
+    """Extra fields stamped onto every record (run id, campaign name, ...)."""
 
 
 class DataManager:

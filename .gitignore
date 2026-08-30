@@ -6,6 +6,10 @@ dist/
 .pytest_cache/
 rome_checkpoints/
 
+# mkdocs build output
+site/
+.cache/
+
 # LaTeX build artifacts
 *.aux
 *.log

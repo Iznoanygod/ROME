@@ -185,8 +185,8 @@ class GRPOTrainer(TrainTask):
         self.config = config
         self.trainer_callbacks = trainer_callbacks
 
-    #: TRL wants a ``datasets.Dataset``, so the data manager builds one.
     wants_hf_dataset = True
+    """TRL wants a ``datasets.Dataset``, so the data manager builds one."""
 
     def validate(self, dataset: Any) -> None:
         super().validate(dataset)
