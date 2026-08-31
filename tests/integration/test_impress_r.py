@@ -1,10 +1,10 @@
-"""IMPRESS-R: ROME-A driven from a real IMPRESS ``adaptive_fn``.
+"""IMPRESS-R: ROME driven from a real IMPRESS ``adaptive_fn``.
 
 Skipped unless IMPRESS is installed — see ``docs/impress.md`` for how, and note
 the backend rename its archived branch needs on current asyncflow. What this
 pins down is the integration contract, not IMPRESS itself:
 
-* ``adaptive_fn`` is the seam — the pipeline's ``run()`` never mentions ROME-A;
+* ``adaptive_fn`` is the seam — the pipeline's ``run()`` never mentions ROME;
 * designs contributed there reach the corpus and trigger a round;
 * the checkpoint the round publishes reaches the *next* pass of the campaign.
 """
@@ -153,7 +153,7 @@ def test_adaptive_fn_carries_designs_in_and_checkpoints_out(tmp_path):
 
 
 def test_rome_can_share_the_impress_engine(tmp_path):
-    """The other half of the choice: one engine for the campaign and ROME-A."""
+    """The other half of the choice: one engine for the campaign and ROME."""
 
     async def scenario():
         backend = await LocalExecutionBackend(ThreadPoolExecutor())
@@ -178,7 +178,7 @@ def test_rome_can_share_the_impress_engine(tmp_path):
         checkpoint = await manager.start_training()
         assert not manager._owns_asyncflow
         await manager.stop()
-        # ROME-A left the campaign's engine running.
+        # ROME left the campaign's engine running.
         assert manager.asyncflow is impress_manager.flow
         await impress_manager.flow.shutdown()
         return checkpoint

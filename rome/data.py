@@ -1,7 +1,7 @@
 """Data Manager — collects scored outputs and builds them into a dataset.
 
 The host workflow already produces scored things: completions with rewards,
-sequences with pLDDT/pTM/pAE, designs with a simulation score. ROME-A's data
+sequences with pLDDT/pTM/pAE, designs with a simulation score. ROME's data
 manager is where those land. Any task, on any node, calls :meth:`DataManager.add`
 and the record becomes part of the training corpus; the training manager reads
 the corpus back out as a dataset when it is time to train.
@@ -102,7 +102,7 @@ class DataManager:
     """Gathers scored outputs from the host workflow and creates a dataset.
 
     The public surface is deliberately tiny — the slide deck's promise is that
-    adopting ROME-A costs a few API calls:
+    adopting ROME costs a few API calls:
 
     * :meth:`add` / :meth:`add_batch` — call from anywhere in the workflow
     * :meth:`get_dataset` — what the training task trains on
@@ -112,7 +112,7 @@ class DataManager:
     Parameters
     ----------
     ddict : Namespace
-        Shared state. Every ROME-A component in a run must be handed the same
+        Shared state. Every ROME component in a run must be handed the same
         one (``Manager`` does this for you).
     config : DataConfig, optional
         Defaults are used when omitted.

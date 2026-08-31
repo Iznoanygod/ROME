@@ -11,7 +11,7 @@ Three responsibilities, and nothing else:
 
 1. **Schedule rounds.** Every round is submitted to the `radical.asyncflow`
    engine the host workflow handed over, so a training task gets its own nodes
-   and GPUs like any other workflow task. ROME-A schedules nothing itself.
+   and GPUs like any other workflow task. ROME schedules nothing itself.
 2. **Publish checkpoints.** A finished round writes a checkpoint, and the manager
    makes it visible to the rest of the run — the streams reload from it, the host
    workflow reads it back with `get_current_model()`.
@@ -173,7 +173,7 @@ configured.
 rome.TrainerConfig(trainer=MyTrainer(gpus=4, nodes=2))
 ```
 
-Override it wholesale for a backend whose keys ROME-A does not know:
+Override it wholesale for a backend whose keys ROME does not know:
 
 ```python
 rome.TrainerConfig(
@@ -182,7 +182,7 @@ rome.TrainerConfig(
 )
 ```
 
-ROME-A does not interpret a `task_description`; it is passed straight through.
+ROME does not interpret a `task_description`; it is passed straight through.
 
 ## When a round runs as a command
 
@@ -210,5 +210,5 @@ rome.TrainerConfig(trainer=my_trainer, train_kwargs={"epochs": 5})
 await manager.start_training(epochs=8)      # per-call, wins over train_kwargs
 ```
 
-Both are forwarded to `TrainTask.train`. ROME-A also adds `model_version` for the
+Both are forwarded to `TrainTask.train`. ROME also adds `model_version` for the
 round being run, so a trainer can name its checkpoint after it.

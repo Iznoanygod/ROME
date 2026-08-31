@@ -2,7 +2,7 @@
 
     dragon -s tests/dragon/test_task_capacity_dragon.py
 
-ROME-A runs one persistent service task per stream replica, and a service task
+ROME runs one persistent service task per stream replica, and a service task
 holds its slot for the whole run. So this number is the budget: replicas past
 it sit in STARTING forever, the requests routed to them are never claimed, and
 if the streams take every slot then training never gets one either.

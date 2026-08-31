@@ -53,10 +53,10 @@ yet" is the normal initial state, not an error.
 ## Why the dummies block
 
 Both `DummyTrainer.train` and `DummyModel.generate` use `time.sleep`. That is
-correct rather than sloppy: ROME-A runs a synchronous trainer inside an asyncflow
+correct rather than sloppy: ROME runs a synchronous trainer inside an asyncflow
 task and a synchronous `process_func` in a worker thread, so neither sleep stalls
 the event loop the other streams are sharing. Writing them `async` would test
-something ROME-A does not actually do.
+something ROME does not actually do.
 
 The sleep is also what makes the machinery *observable*. A round that takes a
 measurable second is long enough to watch `RUNNING` appear, watch the streams keep

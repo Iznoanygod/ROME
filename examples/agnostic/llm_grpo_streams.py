@@ -1,4 +1,4 @@
-"""LLM self-improvement with all three ROME-A managers.
+"""LLM self-improvement with all three ROME managers.
 
 The counterpart to ``impress_r.py``. That example uses only the data and
 training halves, because IMPRESS owns its own inference. This one uses the
@@ -32,7 +32,7 @@ PROMPTS = [
 
 
 # ---------------------------------------------------------------------------
-# The workflow's own inference and reward code. ROME-A just runs it in a loop.
+# The workflow's own inference and reward code. ROME just runs it in a loop.
 # ---------------------------------------------------------------------------
 
 model_config = ModelConfig(
@@ -91,7 +91,7 @@ def score(generations):
 
 
 # ---------------------------------------------------------------------------
-# ROME-A adoption
+# ROME adoption
 # ---------------------------------------------------------------------------
 
 async def main():

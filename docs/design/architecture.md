@@ -1,40 +1,32 @@
 # Architecture
 
-## The inversion
+## The central choice
 
-The original ROME was a workflow. It had three components — model inference,
-reward/simulation, model training — and it owned the control flow between them.
-Building a *new* self-improvement workflow on top of it was easy. Plugging it
-into a workflow that already existed was not: you adopted ROME's control flow, or
-you did not adopt ROME. For a production campaign like IMPRESS, with its own
-pipeline, its own scheduler and its own operational history, that is not a trade
-anyone makes.
+Self-improvement has three moving parts — inference, reward, training — and the
+obvious way to connect them is a loop that owns all three. That design makes a
+*new* self-improvement workflow easy to build and an *existing* workflow
+impossible to adopt into: a production campaign like IMPRESS has its own
+pipeline, its own scheduler and its own operational history, and rewriting it
+around someone else's control flow is not a trade anyone makes.
 
-ROME-A keeps the same three components and gives up the control flow. Each
-component becomes a configurable unit that a host workflow *attaches*, and the
-host keeps driving.
+ROME therefore takes the three components and leaves the control flow to the
+host. Each component is a configurable unit the workflow *attaches*, and the
+workflow keeps driving.
 
 ```mermaid
-flowchart TB
-    subgraph before["ROME — a workflow you adopt"]
-        direction LR
-        B1["inference"] --> B2["reward"] --> B3["training"] --> B1
-    end
-
-    subgraph after["ROME-A — modules you attach"]
-        direction LR
-        H["host workflow<br/><small>drives everything</small>"]
-        H -.-> A1["Data Manager"]
-        H -.-> A2["Training Manager"]
-        H -.-> A3["Stream Manager"]
-        A1 --> A2 --> A3
-    end
+flowchart LR
+    H["host workflow<br/><small>owns the control flow</small>"]
+    H -.-> A1["Data Manager"]
+    H -.-> A2["Training Manager"]
+    H -.-> A3["Stream Manager"]
+    A1 --> A2 --> A3
+    A3 -.-> H
 ```
 
 Three consequences follow, and they are the design's actual claims:
 
 * **Each component is a configurable unit.** `DataConfig`, `TrainerConfig`,
-  `StreamConfig` — every policy the old workflow hard-coded is a field.
+  `StreamConfig` — every policy a hard-coded loop would bury is a field.
 * **Adding a model or training algorithm is a single task.** One `TrainTask`
   subclass with one method. Nothing above it knows what is being trained.
 * **Adoption costs a few API calls.** `add_training_data`, `get_current_model`,
@@ -72,10 +64,10 @@ flowchart LR
 | [Training](../guide/training.md) | Whether a round is possible, submitting it, publishing the result, the status question. | *What* training is. That is a `TrainTask`. |
 | [Stream](../guide/streams.md) | The persistent task lifecycle, request routing and claiming, when weights swap. | The inference or reward code itself. The workflow supplies that. |
 
-The boundary is consistent: **ROME-A owns the loop, the workflow owns the body.**
+The boundary is consistent: **ROME owns the loop, the workflow owns the body.**
 A `process_func` is the workflow's inference code; a `TrainTask` is the
 workflow's training code; a `filter_func` is the workflow's quality judgement.
-ROME-A supplies the machinery around them and nothing that would need to know
+ROME supplies the machinery around them and nothing that would need to know
 about proteins, or language models, or any particular domain.
 
 ## The line that closes the loop
@@ -119,23 +111,23 @@ otherwise a very fast first round could publish weights nobody is listening for.
 1. stop the trainer, waiting out any in-flight round,
 2. stop the streams, draining them,
 3. release the stream group dictionaries,
-4. shut down the workflow engine, *only if ROME-A built it*.
+4. shut down the workflow engine, *only if ROME built it*.
 
 Trainer first because an in-flight round is waited out rather than cancelled —
 killing a half-finished fine-tune leaves a torn checkpoint — and letting the
 streams keep serving while it finishes means the final checkpoint still reaches
 them. An engine the host handed over is still running the host's tasks, so it is
-not ROME-A's to shut down.
+not ROME's to shut down.
 
 ## Ownership of resources
 
-ROME-A borrows rather than owns wherever it can, and the rule is the same for
+ROME borrows rather than owns wherever it can, and the rule is the same for
 every resource: **whoever allocated it, releases it.**
 
 | Resource | Default | Shared |
 | --- | --- | --- |
-| Workflow engine | Built at `start()`, shut down at `stop()`. | `Manager(asyncflow=...)` — the host's, never shut down by ROME-A. |
-| Manager dictionary | Allocated with 1 GiB (Dragon's 3 MiB default is not enough for a real corpus). | `Manager(ddict=...)` — ROME-A namespaces its keys under `rome\|` so nothing collides. |
+| Workflow engine | Built at `start()`, shut down at `stop()`. | `Manager(asyncflow=...)` — the host's, never shut down by ROME. |
+| Manager dictionary | Allocated with 1 GiB (Dragon's 3 MiB default is not enough for a real corpus). | `Manager(ddict=...)` — ROME namespaces its keys under `rome\|` so nothing collides. |
 | Stream group dictionary | One per group, allocated at `start()`, destroyed at `close()`. | `StreamConfig(ddict=...)` — left alone on teardown. |
 
 ## Failure containment
@@ -157,4 +149,4 @@ different containment rule chosen for what is at stake:
   task on another, and the single rule that makes it safe.
 * [Execution](execution.md) — how rounds and streams reach the workflow engine,
   and what happens when the backend never delivers a result.
-* [ROME-A on Dragon](../dragon.md) — what running on real Dragon turned up.
+* [ROME on Dragon](../dragon.md) — what running on real Dragon turned up.

@@ -171,7 +171,7 @@ individual knobs).
 
     `reward_funcs` are called by TRL *inside* the training round, with the
     signature `fn(prompts, completions, **kwargs) -> list[float]`. Rewards that
-    are expensive or need their own resources belong in a ROME-A
+    are expensive or need their own resources belong in a ROME
     [reward stream](streams.md#reward-streams-feed-the-corpus) instead, where
     they get their own tasks and their own nodes.
 
@@ -196,7 +196,7 @@ trainer = ProteinMPNNTrainer(ProteinMPNNConfig(
 ```
 
 It lives with the example rather than in `rome/` on purpose: it is an IMPRESS-R
-*integration*, and ROME-A is workflow agnostic. See
+*integration*, and ROME is workflow agnostic. See
 [Fine-tuning ProteinMPNN](../proteinmpnn_training.md) and
 [the API reference](../api/examples/impress_r/mpnn.md).
 

@@ -2,7 +2,7 @@
 
     dragon -s tests/dragon/test_executable_result_hang_dragon.py
 
-A minimal, self-contained reproducer for an upstream report: no ROME-A, just
+A minimal, self-contained reproducer for an upstream report: no ROME, just
 ``dragon`` + ``rhapsody`` (``DragonExecutionBackendV3``) + ``radical.asyncflow``.
 It shows that while a long-lived **service** task is running, an ordinary
 **executable** task submitted afterwards runs to completion — the shell command

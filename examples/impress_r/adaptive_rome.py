@@ -1,4 +1,4 @@
-"""IMPRESS-R: ROME-A attached to a real IMPRESS pipeline via ``adaptive_fn``.
+"""IMPRESS-R: ROME attached to a real IMPRESS pipeline via ``adaptive_fn``.
 
 Modelled directly on IMPRESS's protein-binding use case
 (``examples/protien_binding_usecase/run_protein_binding.py`` on the
@@ -10,15 +10,15 @@ The point is the seam. In the real use case ``adaptive_decision(pipeline)``
 runs after the pLDDT-extraction task of every pass, reads
 ``af_stats_{name}_pass_{n}.csv``, and decides which designs regressed. That is
 the natural — and only — place where a campaign both *has* fresh scored designs
-and is *between* passes, so it is where both halves of ROME-A belong:
+and is *between* passes, so it is where both halves of ROME belong:
 
     contribute   rome.add_training_data(...)   for designs that pass the filter
     collect      rome.get_current_model()      and point MPNN at it next pass
 
-Everything else in IMPRESS is untouched: ``run()`` never mentions ROME-A, and
+Everything else in IMPRESS is untouched: ``run()`` never mentions ROME, and
 the degradation logic that spawns child pipelines is IMPRESS's own, unchanged.
 
-ROME-A builds its own workflow engine here rather than borrowing IMPRESS's, so
+ROME builds its own workflow engine here rather than borrowing IMPRESS's, so
 its training tasks are scheduled independently of the campaign's. Pass
 ``rome.Manager(impress_manager.flow)`` instead to share one engine — see
 ``docs/impress.md``.
@@ -84,7 +84,7 @@ class ProteinBindingPipeline(ImpressBasePipeline):
         self.previous_scores: Dict[str, float] = kwargs.get("previous_scores", {})
         self.base_path: str = kwargs.get("base_path", os.getcwd())
         self.output_path_af: str = os.path.join(self.base_path, f"{name}_af_out")
-        #: Weights MPNN runs with. ROME-A republishes this between passes.
+        #: Weights MPNN runs with. ROME republishes this between passes.
         self.mpnn_weights: str = kwargs.get("mpnn_weights", "proteinmpnn_v_48_020.pt")
         os.makedirs(self.output_path_af, exist_ok=True)
         super().__init__(name, flow, **configs, **kwargs)
@@ -134,7 +134,7 @@ class ProteinBindingPipeline(ImpressBasePipeline):
             return path
 
     async def run(self) -> None:
-        """IMPRESS's pass loop. Note that it never mentions ROME-A."""
+        """IMPRESS's pass loop. Note that it never mentions ROME."""
         while self.passes <= self.max_passes:
             self.logger.pipeline_log(f"pass {self.passes} | mpnn={self.mpnn_weights}")
             await self.s1_mpnn()
@@ -157,11 +157,11 @@ def _version_of(weights_path: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# The seam: ROME-A lives entirely inside adaptive_fn.
+# The seam: ROME lives entirely inside adaptive_fn.
 # ---------------------------------------------------------------------------
 
 def make_adaptive_fn(manager: rome.Manager):
-    """Build IMPRESS's adaptive function with ROME-A folded into it.
+    """Build IMPRESS's adaptive function with ROME folded into it.
 
     ``manager`` is captured rather than passed through IMPRESS, because
     ``adaptive_fn`` has a fixed one-argument signature.
@@ -175,7 +175,7 @@ def make_adaptive_fn(manager: rome.Manager):
         if not os.path.exists(stats):
             return
 
-        # -- 1. contribute this pass's designs to ROME-A -------------------
+        # -- 1. contribute this pass's designs to ROME -------------------
         accepted = 0
         with open(stats) as fd:
             for row in csv.DictReader(fd):
@@ -198,7 +198,7 @@ def make_adaptive_fn(manager: rome.Manager):
         weights = manager.get_current_model()
         if weights and weights != pipeline.mpnn_weights:
             pipeline.mpnn_weights = weights
-            pipeline.logger.pipeline_log(f"ROME-A published v{_version_of(weights)}")
+            pipeline.logger.pipeline_log(f"ROME published v{_version_of(weights)}")
 
         pipeline.logger.pipeline_log(
             f"corpus {manager.data.total_count} (+{accepted} this pass) | "
@@ -222,7 +222,7 @@ async def main() -> None:
     workdir = tempfile.mkdtemp(prefix="impress_r_")
     os.chdir(workdir)
 
-    # ROME-A with no engine of its own passed in: it builds one at start() and
+    # ROME with no engine of its own passed in: it builds one at start() and
     # shuts it down at stop(), so its training tasks are managed independently
     # of IMPRESS's. Pass impress_manager.flow instead to share one.
     manager = rome.Manager(
@@ -257,7 +257,7 @@ async def main() -> None:
                 adaptive_fn=make_adaptive_fn(manager),
             )
         ])
-        print("\nROME-A:", manager.report())
+        print("\nROME:", manager.report())
     finally:
         await impress.flow.shutdown()
         await manager.stop()

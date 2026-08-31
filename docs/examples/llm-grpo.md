@@ -65,7 +65,7 @@ def score(generations):
 
 Two things to notice.
 
-**It takes no `ctx`.** ROME-A inspects the signature and only passes the context
+**It takes no `ctx`.** ROME inspects the signature and only passes the context
 when there is somewhere to put it, so an existing reward function is adopted
 unchanged.
 

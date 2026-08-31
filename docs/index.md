@@ -5,22 +5,22 @@ component you add to a workflow you already have.
 
 ---
 
-## The problem ROME-A solves
+## What ROME is
 
-The original ROME exposed self-improvement as a *workflow* with three
-components — model inference, reward/simulation, and model training. Building a
-new improvement workflow with ROME was easy. Plugging ROME into a workflow you
-already had was not: you adopted ROME's control flow, or you did not adopt ROME.
+A workflow that produces scored outputs — completions with rewards, designs with
+confidence scores — already contains everything a model needs to improve on its
+own. ROME is what closes that loop, without asking the workflow to reorganise
+itself around it.
 
-**ROME-A** inverts that. Model improvement becomes a set of pluggable modules
-you attach to an existing workflow rather than a workflow you adopt:
+Model improvement is a set of pluggable modules you attach to a workflow you
+already have, not a workflow you adopt:
 
 * each component is a configurable unit,
 * adding a new model or training algorithm is a single task,
 * adoption costs a handful of API calls — the host workflow's own code does not
   move.
 
-An [IMPRESS](impress.md) protein-design campaign adopts ROME-A by adding two
+An [IMPRESS](impress.md) protein-design campaign adopts ROME by adding two
 lines inside its adaptive step. The campaign keeps running exactly as it did;
 mid-campaign, the model it designs with starts getting better.
 
@@ -90,13 +90,13 @@ demand via `await manager.start_training()`.
 
 <div class="grid cards" markdown>
 
-- :material-download: **[Installation](installation.md)** — install ROME-A, its
+- :material-download: **[Installation](installation.md)** — install ROME, its
   extras, and the Dragon runtime it keeps shared state in.
 
 - :material-rocket-launch: **[Quickstart](quickstart.md)** — run the closed loop
   end to end in under a minute, with no model and no GPU.
 
-- :material-puzzle: **[Adopting ROME-A](guide/adoption.md)** — the four calls
+- :material-puzzle: **[Adopting ROME](guide/adoption.md)** — the four calls
   that attach model improvement to a workflow you already have.
 
 - :material-sitemap: **[Design](design/architecture.md)** — why three managers,
@@ -135,7 +135,7 @@ The version climbs while the stream keeps serving; it is never restarted.
 ## Project layout
 
 ```text
-rome/            ROME-A
+rome/            ROME
   manager.py       Manager — wires the three components together
   data.py          Data Manager
   stream.py        Stream Manager
@@ -143,7 +143,7 @@ rome/            ROME-A
   train/           trainer tasks (base, llm/GRPO)
   utils.py         DDict layout helpers + asyncflow submission
   dummy.py         model-free trainer and streams, for smoke tests
-oldrome/         the original ROME flows, kept for reference
-examples/        ROME-A adoption examples
+oldrome/         the earlier flow-based implementation, kept for reference
+examples/        ROME adoption examples
 protein_generation/  IMPRESS pipeline scripts
 ```

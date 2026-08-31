@@ -1,14 +1,14 @@
-"""IMPRESS's dummy adaptive example, hooked to ROME-A's dummy trainer.
+"""IMPRESS's dummy adaptive example, hooked to ROME's dummy trainer.
 
 This is IMPRESS's own ``examples/dummy_adaptive.py`` — the minimal adaptive
 pipeline, ``sequence_analysis -> fitness_evaluation -> [adaptive step] ->
 optimization_step``, with random child-pipeline spawning — with **two lines of
-ROME-A** added inside the adaptive function:
+ROME** added inside the adaptive function:
 
     contribute   manager.add_training_data(...)   # this generation's designs
     collect      manager.get_current_model()      # the improved model, if any
 
-Nothing else changes. ROME-A's training manager watches the corpus those
+Nothing else changes. ROME's training manager watches the corpus those
 contributions build and, once ``min_samples`` designs have arrived from the
 workflow, runs a training round on its own — here the ``DummyTrainer``, which
 sleeps instead of fine-tuning and writes a checkpoint. The next generation to
@@ -42,7 +42,7 @@ import rome
 from rome.dummy import DummyTrainer
 
 #: Candidate sequences a generation's fitness step produces — the designs it
-#: contributes to ROME-A. A small batch so a round fires after a pipeline or two.
+#: contributes to ROME. A small batch so a round fires after a pipeline or two.
 DESIGNS_PER_GENERATION = 4
 
 
@@ -64,7 +64,7 @@ class DummyProteinPipeline(ImpressBasePipeline):
         self.generation: int = merged.pop("generation", 1)
         self.parent_name: str = merged.pop("parent_name", "root")
         self.max_generations: int = merged.pop("max_generations", 3)
-        #: The model this generation runs. ROME-A republishes it between rounds.
+        #: The model this generation runs. ROME republishes it between rounds.
         self.mpnn_weights: str = merged.pop("mpnn_weights", "proteinmpnn_v_48_020.pt")
         #: Designs and their fitness, produced by ``fitness_evaluation``.
         self.designs: Dict[str, float] = {}
@@ -97,7 +97,7 @@ class DummyProteinPipeline(ImpressBasePipeline):
             return "/bin/echo 'Optimizing' && /bin/date"
 
     async def run(self) -> None:
-        """IMPRESS's dummy pass. It never mentions ROME-A."""
+        """IMPRESS's dummy pass. It never mentions ROME."""
         self.logger.pipeline_log(f"gen {self.generation} | mpnn={self.mpnn_weights}")
         await self.sequence_analysis()
         await self.fitness_evaluation()
@@ -120,14 +120,14 @@ def _version_of(weights_path: str) -> int:
 
 
 def make_adaptive_fn(manager: rome.Manager):
-    """IMPRESS's adaptive strategy with the two ROME-A hooks folded in.
+    """IMPRESS's adaptive strategy with the two ROME hooks folded in.
 
     ``manager`` is captured because ``adaptive_fn`` has a fixed one-argument
     signature — the manager cannot be threaded through IMPRESS.
     """
 
     async def adaptive_optimization_strategy(pipeline: DummyProteinPipeline) -> None:
-        # -- HOOK 1: contribute this generation's designs to ROME-A ----------
+        # -- HOOK 1: contribute this generation's designs to ROME ----------
         accepted = 0
         for design, fitness in pipeline.designs.items():
             uid = manager.add_training_data(
@@ -141,7 +141,7 @@ def make_adaptive_fn(manager: rome.Manager):
         weights = manager.get_current_model()
         if weights and weights != pipeline.mpnn_weights:
             pipeline.mpnn_weights = weights
-            pipeline.logger.pipeline_log(f"ROME-A published v{_version_of(weights)}")
+            pipeline.logger.pipeline_log(f"ROME published v{_version_of(weights)}")
 
         pipeline.logger.pipeline_log(
             f"corpus {manager.data.total_count} (+{accepted} this gen) | "
@@ -170,7 +170,7 @@ def make_adaptive_fn(manager: rome.Manager):
 async def main() -> None:
     workdir = tempfile.mkdtemp(prefix="impress_r_dummy_")
 
-    # ROME-A with no engine passed in: it builds its own at start() and shuts it
+    # ROME with no engine passed in: it builds its own at start() and shuts it
     # down at stop(), so its training runs independently of IMPRESS's tasks.
     manager = rome.Manager(
         data_config=rome.DataConfig(
@@ -200,7 +200,7 @@ async def main() -> None:
             )
             for i in range(1, 4)
         ])
-        print("\nROME-A:", manager.report())
+        print("\nROME:", manager.report())
     finally:
         await impress.flow.shutdown()
         await manager.stop()

@@ -1,13 +1,13 @@
-"""Shared helpers for laying ROME-A state out inside a Dragon DDict.
+"""Shared helpers for laying ROME state out inside a Dragon DDict.
 
-Every ROME-A component reads and writes the same distributed dictionary, which
+Every ROME component reads and writes the same distributed dictionary, which
 is what lets a task on one node add training data that a training task on
 another node picks up. The one rule that makes that safe is:
 
     **never read-modify-write a shared container.**
 
 ``d = ddict["corpus"]; d[uid] = rec; ddict["corpus"] = d`` loses records the
-moment two nodes do it at once. So ROME-A gives every record, request and
+moment two nodes do it at once. So ROME gives every record, request and
 result its own key and rebuilds collections by scanning a key prefix — single
 key writes are atomic in a DDict, so nothing is ever clobbered.
 
@@ -45,7 +45,7 @@ def thread_handle(ddict: MutableMapping, serialized: Optional[str]) -> MutableMa
     A Dragon DDict handle multiplexes an FLI channel and is **not** safe to
     share between threads: concurrent use corrupts the channel and surfaces as
     ``dragon.fli.DragonFLIEOT``, usually from an unrelated later operation. It
-    is not a hypothetical — ROME-A runs the manager's event loop and its
+    is not a hypothetical — ROME runs the manager's event loop and its
     ``asyncio.to_thread`` stream workers in one process against one dictionary,
     which reproduces it within a few hundred operations.
 
@@ -158,7 +158,7 @@ class Namespace(MutableMapping):
     def pop(self, key: str, default: Any = _MISSING) -> Any:
         """Remove ``key`` and return its value.
 
-        This is ROME-A's claim protocol: whoever pops a key owns that item, so
+        This is ROME's claim protocol: whoever pops a key owns that item, so
         two stream replicas draining the same queue never process a request
         twice. Correctness rests on the underlying pop being atomic, which is
         why it delegates rather than doing read-then-delete — a Dragon DDict
@@ -181,7 +181,7 @@ class Namespace(MutableMapping):
     def increment(self, key: str, amount: int = 1) -> int:
         """Bump an integer counter and return the new value.
 
-        Only safe when a single component owns the counter — ROME-A keeps to
+        Only safe when a single component owns the counter — ROME keeps to
         that (the training manager owns ``model_version``, and so on).
         """
         new = int(self.get(key, 0)) + amount
@@ -253,13 +253,13 @@ def submit_task(
 ):
     """Submit ``func`` to the workflow engine as a task.
 
-    ROME-A schedules nothing itself — asyncflow is the execution backend, and
-    this is the single place ROME-A talks to it.
+    ROME schedules nothing itself — asyncflow is the execution backend, and
+    this is the single place ROME talks to it.
 
     Parameters
     ----------
     asyncflow : WorkflowEngine
-        The engine the host workflow handed to ROME-A.
+        The engine the host workflow handed to ROME.
     func : coroutine function
         The task body. asyncflow only accepts ``async def``. For a *function*
         task a blocking trainer or inference call belongs inside an
@@ -267,10 +267,10 @@ def submit_task(
         the shell command string to run (the same shape IMPRESS uses).
     task_description : dict, optional
         Backend-specific resource request (ranks, GPUs, placement policy, …).
-        Passed straight through — ROME-A does not interpret it, because the
+        Passed straight through — ROME does not interpret it, because the
         keys depend on which execution backend the workflow is running.
     service : bool
-        Mark the task as a long-running service. ROME-A's inference and reward
+        Mark the task as a long-running service. ROME's inference and reward
         streams are services; a training round is not. Ignored for executable
         tasks.
     executable : bool
@@ -295,7 +295,7 @@ def submit_task(
 def resource_description(
     gpus: int = 0, nodes: int = 1, extra: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Build a default ``task_description`` from ROME-A's coarse resource fields.
+    """Build a default ``task_description`` from ROME's coarse resource fields.
 
     The concrete keys an execution backend understands are its own business, so
     this only fills in the two that the RADICAL backends share, and anything a

@@ -1,4 +1,4 @@
-"""ROME-A end to end with no model: a dummy inference stream and a dummy trainer.
+"""ROME end to end with no model: a dummy inference stream and a dummy trainer.
 
 The smallest complete demonstration of the closed loop. An inference stream
 serves placeholder outputs, the workflow scores them into the corpus, and once
@@ -86,7 +86,7 @@ async def main():
             # On the Dragon execution backend a finished round's result can go
             # undelivered while a stream service task is running (a rhapsody
             # monitor limit — see docs/dragon.md). The round still writes its
-            # checkpoint, so after this grace ROME-A publishes from disk. The
+            # checkpoint, so after this grace ROME publishes from disk. The
             # default is 60s, right for a multi-minute real round but longer
             # than this whole demo; a 1s dummy round wants a few seconds.
             result_fallback_seconds=float(os.environ.get("ROME_FALLBACK", 4)),

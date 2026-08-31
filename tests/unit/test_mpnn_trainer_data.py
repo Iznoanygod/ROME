@@ -2,7 +2,7 @@
 
 The trainer has two halves. The *data* half — validate, chain designation,
 staging, the manifest, the checkpoint format, and building the command + job
-spec (`as_command`) — turns a ROME-A corpus into what the original
+spec (`as_command`) — turns a ROME corpus into what the original
 ``dauparas/ProteinMPNN`` fine-tuning loop consumes and publishes, and needs
 nothing but the standard library plus pandas. The *training* half
 (`examples.impress_r.mpnn_train_wrapper.run_round`) imports torch and the

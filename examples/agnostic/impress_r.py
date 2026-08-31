@@ -1,11 +1,11 @@
-"""IMPRESS-R: adding model improvement to the IMPRESS pipeline with ROME-A.
+"""IMPRESS-R: adding model improvement to the IMPRESS pipeline with ROME.
 
 IMPRESS today runs backbone -> ProteinMPNN -> structure prediction ->
 pLDDT/pTM/pAE -> keep/fallback/migrate/drop. It is open loop: every campaign
 improves the designs, never the model.
 
 This example is what closing that loop costs. The IMPRESS pipeline below is a
-stand-in (``run_impress_cycle``), and it runs *unchanged* — ROME-A is four
+stand-in (``run_impress_cycle``), and it runs *unchanged* — ROME is four
 calls:
 
     1. build a Manager with a data policy and a trainer          (setup)
@@ -13,13 +13,13 @@ calls:
     3. rome.get_current_model() to pick up improved weights       (in the loop)
     4. await rome.stop()                                          (teardown)
 
-ROME-A keeps its shared state in a Dragon DDict, so the example runs under the
+ROME keeps its shared state in a Dragon DDict, so the example runs under the
 Dragon runtime with a single-node execution backend::
 
     dragon examples/agnostic/impress_r.py
 
 On a real allocation, swap ``LocalExecutionBackend`` for the Dragon or RADICAL
-backend the campaign already uses — ROME-A submits its tasks to whatever engine
+backend the campaign already uses — ROME submits its tasks to whatever engine
 you hand it.
 """
 
@@ -58,7 +58,7 @@ DESIGNS_PER_CYCLE = 8
 
 
 # ---------------------------------------------------------------------------
-# The host workflow. ROME-A does not know or care what is in here.
+# The host workflow. ROME does not know or care what is in here.
 # ---------------------------------------------------------------------------
 
 def run_impress_cycle(cycle, mpnn_weights, model_version):
@@ -111,7 +111,7 @@ def train_proteinmpnn(manifest_path, output_dir, config):
 
 
 # ---------------------------------------------------------------------------
-# ROME-A adoption
+# ROME adoption
 # ---------------------------------------------------------------------------
 
 async def main():

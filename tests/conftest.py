@@ -5,7 +5,7 @@ radical) when they aren't installed so unit and mocked-integration tests can
 run on a minimal environment. Tests that need the real packages should call
 ``pytest.importorskip`` explicitly.
 
-The Dragon stubs are *working* stand-ins rather than empty classes: ROME-A's
+The Dragon stubs are *working* stand-ins rather than empty classes: ROME's
 components are written against the DDict mapping protocol and Event's
 set/clear/is_set, so a plain ``dict`` and a ``threading.Event`` exercise the
 real code paths without a Dragon runtime.
@@ -129,7 +129,7 @@ def _stub_if_missing() -> None:
         class _StubDDict(dict):
             """In-process stand-in for a Dragon DDict.
 
-            A plain ``dict`` is faithful for the mapping operations ROME-A uses,
+            A plain ``dict`` is faithful for the mapping operations ROME uses,
             but it is not constructor-compatible: ``dict(total_mem=...)`` would
             turn the sizing arguments into *entries*, which then show up in
             every prefix scan. So the kwargs are accepted and dropped, and
@@ -169,7 +169,7 @@ def _stub_if_missing() -> None:
         m = _ensure_module("datasets")
 
         class _Dataset(list):
-            """Enough of ``datasets.Dataset`` for ROME-A's trainers."""
+            """Enough of ``datasets.Dataset`` for ROME's trainers."""
 
             @classmethod
             def from_list(cls, rows):
@@ -188,11 +188,11 @@ _stub_if_missing()
 class FakeWorkflowEngine:
     """Minimal stand-in for ``radical.asyncflow.WorkflowEngine``.
 
-    Mirrors the real engine's contract for the one thing ROME-A uses:
+    Mirrors the real engine's contract for the one thing ROME uses:
     ``function_task`` is usable bare or called with ``service=...``, only
     accepts coroutine functions, pops a ``task_description`` kwarg at call
     time, and returns a future. Submissions are recorded so tests can assert
-    on what ROME-A asked the backend for.
+    on what ROME asked the backend for.
     """
 
     def __init__(self):
@@ -224,7 +224,7 @@ class FakeWorkflowEngine:
 
 @pytest.fixture
 def asyncflow():
-    """A fake workflow engine ROME-A can submit tasks to."""
+    """A fake workflow engine ROME can submit tasks to."""
     return FakeWorkflowEngine()
 
 
@@ -236,7 +236,7 @@ def ddict():
 
 @pytest.fixture
 def namespace(ddict):
-    """A ROME-A namespace over the shared dictionary."""
+    """A ROME namespace over the shared dictionary."""
     from rome.utils import Namespace
 
     return Namespace(ddict, "rome|")

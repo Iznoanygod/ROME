@@ -1,4 +1,4 @@
-# ROME-A on Dragon
+# ROME on Dragon
 
 Status: **verified working** on Dragon 0.14.1, single node.
 
@@ -14,7 +14,7 @@ dragon-cleanup-deprecated                         # after every Dragon run
 real DDicts — one for the manager, one for the stream group — and asserts: 40
 requests answered exactly once, work spread over replicas, 100 records surviving
 four concurrent writer threads, a training round firing and publishing, the
-running streams swapping onto the new checkpoint, and ROME-A staying inside its
+running streams swapping onto the new checkpoint, and ROME staying inside its
 key namespace in a dictionary shared with the host workflow. All pass.
 
 These are scripts rather than pytest modules because the Dragon launcher runs a
@@ -26,7 +26,7 @@ script, not a test session. They exit non-zero on failure.
 
 ### A DDict client handle is not safe to share between threads
 
-This was a hard failure, not a slow path. ROME-A ran the manager's event loop
+This was a hard failure, not a slow path. ROME ran the manager's event loop
 and its stream workers in one process against one `DDict` object, and the run
 died partway through with:
 
@@ -74,9 +74,9 @@ not whether the package is importable.
 
 ### `pop` is an exactly-once claim
 
-ROME-A's claim protocol is "whoever pops the key owns the item". Four threads
+ROME's claim protocol is "whoever pops the key owns the item". Four threads
 racing over 120 keys: **120 claimed, 120 unique, 0 duplicates.** The losers get
-`DDictKeyError`, which subclasses `KeyError`, so ROME-A's existing handling was
+`DDictKeyError`, which subclasses `KeyError`, so ROME's existing handling was
 already correct.
 
 `Namespace.pop` now delegates to the backing's `pop` instead of doing
@@ -120,7 +120,7 @@ dictionary is still where the corpus and the published checkpoint live; streams
 read it only to notice a new checkpoint.
 
 Supplying `StreamConfig.ddict` shares a dictionary you already own instead, in
-which case ROME-A will not destroy it.
+which case ROME will not destroy it.
 
 ### What is still O(corpus)
 
@@ -190,7 +190,7 @@ scanning one namespace still streams every key in the dictionary, including the
 ones another namespace is popping. Only a *separate DDict* isolates a scan from
 a pop.
 
-#### What this means for ROME-A
+#### What this means for ROME
 
 | dictionary | pops during a run | scans | exposure |
 |---|---|---|---|
@@ -223,16 +223,16 @@ done.
   starting.
 - **Size the DDicts.** Dragon's default `total_mem` is 3 MiB, which a campaign
   corpus will exhaust with an allocation error from inside a manager rather than
-  anything ROME-A can explain. `Manager` now requests 1 GiB by default and
+  anything ROME can explain. `Manager` now requests 1 GiB by default and
   accepts `ddict_kwargs` to override; pass `ddict=` to share the host
   workflow's dictionary instead.
-- **ROME-A stays in its namespace.** Every key it writes is prefixed `rome|`,
+- **ROME stays in its namespace.** Every key it writes is prefixed `rome|`,
   asserted by the Dragon test against a shared dictionary.
 
 ### A never-completing task blocks result delivery for everything behind it
 
-The last thing standing between ROME-A and a working loop on the multi-process
-Dragon backend, and it is a backend defect rather than anything ROME-A does.
+The last thing standing between ROME and a working loop on the multi-process
+Dragon backend, and it is a backend defect rather than anything ROME does.
 
 **The measurement.** With a stream running and a training round finished:
 
@@ -254,7 +254,7 @@ for tuid in list(self._monitored_batches.keys()):
         continue
 ```
 
-A ROME-A stream is a service task that never completes, so its key is
+A ROME stream is a service task that never completes, so its key is
 permanently pending, its read never returns, and the sweep never reaches
 anything behind it. The monitor thread stays *alive* the whole time, which is
 what made this hard to see.
@@ -307,7 +307,7 @@ ok    concurrent writers lose nothing
 ok    training fired and published
 ok    streams swapped onto the checkpoint
 ok    host workflow keys untouched
-ROME-A works on Dragon
+ROME works on Dragon
 ```
 
 **Confirmed where.** The *stall* is confirmed on both a 4-CPU node and an NCSA
@@ -327,7 +327,7 @@ returns quickly on your allocation, the mechanism there is something else and
 the output says what.
 
 `tests/dragon/test_executable_result_hang_dragon.py` is the minimal,
-report-ready reproducer — no ROME-A, just Dragon + rhapsody + asyncflow. It
+report-ready reproducer — no ROME, just Dragon + rhapsody + asyncflow. It
 submits a trivial **executable** task (`sh -c 'echo … > file'`) with an idle
 service running and shows the command completes (its output file lands on disk)
 while asyncflow's future for it stays PENDING. The executable form makes the

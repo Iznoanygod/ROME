@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone ProteinMPNN fine-tuning wrapper — ROME-A's training executable.
+"""Standalone ProteinMPNN fine-tuning wrapper — ROME's training executable.
 
 This is the script the training manager submits **as a shell command**, the same
 way IMPRESS submits ``mpnn_wrapper.py`` for inference rather than calling a Python
@@ -14,7 +14,7 @@ the round finishes, so the CUDA context and the model are released with it.
 
 It sits beside the inference wrapper (``mpnn_wrapper.py``) it complements, in the
 IMPRESS-R example rather than in the framework — the trainer is an integration,
-and ROME-A itself is workflow-agnostic. The file is deliberately dragon-free — it
+and ROME itself is workflow-agnostic. The file is deliberately dragon-free — it
 imports only the standard library, torch, and the ``dauparas/ProteinMPNN``
 checkout named in the job — so it can be run and debugged on its own, exactly
 like ``mpnn_wrapper.py``. It is also the single source of truth for the training

@@ -122,7 +122,7 @@ one) with a Noam schedule, label-smoothed NLL — the original trainer's own rec
 ## 6. How a round is submitted — a command, not a function
 
 Like IMPRESS, which submits `mpnn_wrapper.py` as a shell command rather than
-calling ProteinMPNN inside the campaign process, ROME-A submits a training round
+calling ProteinMPNN inside the campaign process, ROME submits a training round
 as an **executable task**. `ProteinMPNNTrainer.as_command(dataset, output_dir)`
 stages the round's structures, writes a self-contained job spec
 (`<output_dir>/train_job.json`), and returns a command line:

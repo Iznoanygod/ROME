@@ -1,6 +1,6 @@
-"""Dummy components for exercising ROME-A without a model.
+"""Dummy components for exercising ROME without a model.
 
-Everything here has the same shape as a real ROME-A trainer or stream function
+Everything here has the same shape as a real ROME trainer or stream function
 and none of the cost: the trainer sleeps instead of fine-tuning, and the model
 emits a placeholder string instead of generating. That makes them useful for
 
@@ -18,7 +18,7 @@ unwritable checkpoint directory, a DDict that is not shared, a stream that never
 sees a publication.
 
 Both the trainer and the inference function block on ``time.sleep``. That is
-correct rather than sloppy: ROME-A runs a synchronous trainer inside an
+correct rather than sloppy: ROME runs a synchronous trainer inside an
 asyncflow task and a synchronous ``process_func`` in a worker thread, so neither
 sleep stalls the event loop the other streams are sharing.
 """

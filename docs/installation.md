@@ -1,6 +1,6 @@
 # Installation
 
-ROME-A is a Python package. It needs Python **3.9+** for the framework itself,
+ROME is a Python package. It needs Python **3.9+** for the framework itself,
 and Python **3.10–3.12** if you want the Dragon runtime that backs its shared
 state on a cluster.
 
@@ -16,7 +16,7 @@ This pulls in the framework and its trainers:
 
 | Dependency | Why |
 | --- | --- |
-| `radical.asyncflow` | The workflow engine ROME-A submits every task to. ROME-A schedules nothing itself. |
+| `radical.asyncflow` | The workflow engine ROME submits every task to. ROME schedules nothing itself. |
 | `rhapsody-py[radical_pilot]` | Execution backends — RADICAL-Pilot for HPC. |
 | `rhapsody-py[dragon]` | The Dragon execution backend (Python 3.10–3.12 only). |
 | `torch`, `transformers`, `peft`, `trl`, `datasets` | The built-in LLM/GRPO trainer. |
@@ -54,18 +54,18 @@ failures.
 
 Note that the docs dependencies are a separate requirements file rather than a
 `[docs]` extra: mkdocstrings reads the source **statically** (griffe parses it
-rather than importing it), so the API reference builds with none of ROME-A's
+rather than importing it), so the API reference builds with none of ROME's
 runtime dependencies installed — no Dragon, no torch, no GPU. An extra would have
 dragged all of them in.
 
 ## Dragon
 
-ROME-A keeps its cross-node state in a Dragon `DDict` and its stop/reload
+ROME keeps its cross-node state in a Dragon `DDict` and its stop/reload
 signals in Dragon `Event`s, so `rome.manager` and `rome.stream` import
 `dragon.data.ddict` and `dragon.native.event` at module scope. Dragon ships as
 part of the `rhapsody-py[dragon]` extra on supported Python versions, but on a
 cluster you generally build it against the site's MPI and network stack instead.
-[Setting up ROME-A + IMPRESS on Delta](delta.md) walks through that build.
+[Setting up ROME + IMPRESS on Delta](delta.md) walks through that build.
 
 Anything launched under Dragon runs through its launcher rather than plain
 `python`:
@@ -76,7 +76,7 @@ dragon -s examples/agnostic/dummy_loop.py    # multi-node placement
 dragon-cleanup-deprecated                    # after every Dragon run
 ```
 
-The `-s` form is also how ROME-A's Dragon checks are run — they are scripts, not
+The `-s` form is also how ROME's Dragon checks are run — they are scripts, not
 pytest modules, because the launcher runs a script rather than a test session:
 
 ```bash
@@ -84,7 +84,7 @@ dragon -s tests/dragon/test_namespace_dragon.py   # DDict/Event primitives
 dragon -s tests/dragon/test_manager_dragon.py     # the whole loop, 4 replicas
 ```
 
-[ROME-A on Dragon](dragon.md) records what running there turned up — notably
+[ROME on Dragon](dragon.md) records what running there turned up — notably
 that a DDict client handle cannot be shared across threads — and the one known
 scaling limit.
 
@@ -92,7 +92,7 @@ scaling limit.
 
 The IMPRESS-R integration needs IMPRESS installed from the
 `archive/ipdps_pdz_usecase` branch, plus a `dauparas/ProteinMPNN` checkout for
-the trainer to fine-tune. Neither is a ROME-A dependency — ROME-A is workflow
+the trainer to fine-tune. Neither is a ROME dependency — ROME is workflow
 agnostic, and the ProteinMPNN trainer ships with the example rather than with
 the framework. See [Running IMPRESS](impress.md).
 

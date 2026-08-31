@@ -1,4 +1,4 @@
-"""The DDict layout ROME-A's cross-node correctness rests on."""
+"""The DDict layout ROME's cross-node correctness rests on."""
 
 from rome.utils import Namespace
 
@@ -43,7 +43,7 @@ def test_prefix_scan_ignores_other_namespaces(ddict):
     ddict["someone_elses_key"] = 3
     assert root.namespace("record").keys() == ["a"]
     assert root.namespace("meta").values() == [2]
-    # The host workflow's own keys are untouched by a ROME-A scan.
+    # The host workflow's own keys are untouched by a ROME scan.
     assert ddict["someone_elses_key"] == 3
 
 

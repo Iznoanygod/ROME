@@ -2,7 +2,7 @@
 
     dragon -s tests/dragon/test_service_blocks_results_dragon.py
 
-This is what stops a ROME-A training round from completing while inference
+This is what stops a ROME training round from completing while inference
 streams are up. The round *runs* -- it writes its checkpoint to disk -- but the
 driver's future stays PENDING forever, so TrainerStatus never leaves RUNNING and
 no checkpoint is ever published.
@@ -16,7 +16,7 @@ An earlier version of this script only measured "ran", which is why a first run
 on a real allocation looked healthy. A task that runs but never resolves is the
 failure.
 
-No ROME-A here -- plain Dragon, rhapsody and asyncflow. The variable is simply
+No ROME here -- plain Dragon, rhapsody and asyncflow. The variable is simply
 whether a service task is running: an *idle* one that only sleeps is enough.
 Measured on a single node:
 
@@ -50,7 +50,7 @@ async def idle_service(ser, marker):
 
 
 async def busy_service(ser, marker):
-    """Service that scans and pops, like a ROME-A stream replica."""
+    """Service that scans and pops, like a ROME stream replica."""
     from dragon.data.ddict import DDict
 
     d = DDict.attach(ser)

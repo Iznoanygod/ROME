@@ -83,7 +83,7 @@ class ModelConfig:
 class GRPOConfig:
     """Configuration class for managing GRPO training settings in the ROME framework.
 
-    Holds only the knobs ROME-A itself cares about. Anything else TRL accepts
+    Holds only the knobs ROME itself cares about. Anything else TRL accepts
     goes in ``trl_config`` (a ``trl.GRPOConfig``) or in ``extra_args``, which is
     merged into the TRL config that gets built.
 
@@ -98,7 +98,7 @@ class GRPOConfig:
     reward_funcs : List[Callable]
         Reward functions TRL calls inline during training, with the signature
         ``fn(prompts, completions, **kwargs) -> list[float]``. Rewards that are
-        expensive or need their own resources belong in a ROME-A *reward
+        expensive or need their own resources belong in a ROME *reward
         stream* instead — see :mod:`rome.stream`.
     prompt_column : str
         Field of a corpus record holding the prompt TRL should train on.
@@ -273,7 +273,7 @@ def save_model(model, model_config: ModelConfig, output_dir: str) -> str:
     """Persist weights for cross-task reload; returns the directory written to.
 
     When a LoRA adapter is configured only the adapter is saved — that is the
-    whole reason ROME-A can hot-swap weights mid-campaign without stalling
+    whole reason ROME can hot-swap weights mid-campaign without stalling
     inference on a multi-gigabyte read.
     """
     os.makedirs(output_dir, exist_ok=True)

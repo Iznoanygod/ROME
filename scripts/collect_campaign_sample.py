@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bundle a small, representative sample of an IMPRESS campaign directory.
 
-Wiring ROME-A into a campaign needs the campaign's *shape*, not its bulk: what
+Wiring ROME into a campaign needs the campaign's *shape*, not its bulk: what
 files exist, how they are named, what the score CSVs contain, and what one of
 each artifact actually looks like. That is usually a few MB out of many GB.
 

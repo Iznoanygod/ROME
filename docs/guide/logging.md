@@ -1,13 +1,13 @@
 # Logging
 
-ROME-A schedules training out of sight of the host workflow, so a campaign
+ROME schedules training out of sight of the host workflow, so a campaign
 operator needs to *see* what it is doing: when a design arrives, when a round is
 submitted, when a new model is published.
 
 `rome._logging` wires a single stdout handler on the `rome` logger namespace
 whose output mirrors IMPRESS's `impress.utils.logger.ImpressLogger` — the same
 `HH:MM:SS.mmm [LEVEL] [COMPONENT]` shape and the same per-level and
-per-component colours — so ROME-A's lines sit alongside IMPRESS's
+per-component colours — so ROME's lines sit alongside IMPRESS's
 `[PIPELINE-P1]` lines in one run.
 
 ```text
@@ -17,7 +17,7 @@ per-component colours — so ROME-A's lines sit alongside IMPRESS's
 12:34:58.530 [INFO] [ROME-STREAM]  infer[0] reloaded weights -> v1 (v_48_020.pt)
 ```
 
-It matches IMPRESS's *format* without importing IMPRESS, so ROME-A keeps working
+It matches IMPRESS's *format* without importing IMPRESS, so ROME keeps working
 in workflows that have nothing to do with it — the LLM/GRPO trainer, the dummy
 loop.
 
@@ -63,7 +63,7 @@ import logging
 logging.getLogger("rome").handlers = [my_handler]   # before importing/using rome
 ```
 
-ROME-A's logger sets `propagate = False` when it attaches its own handler, so it
+ROME's logger sets `propagate = False` when it attaches its own handler, so it
 owns its output and never double-prints into a root handler.
 
 ## Turning it down
@@ -75,7 +75,7 @@ logging.getLogger("rome.data").setLevel(logging.WARNING)   # one component
 ```
 
 ```bash
-ROME_LOG_LEVEL=WARNING                                     # all of ROME-A
+ROME_LOG_LEVEL=WARNING                                     # all of ROME
 ```
 
 Lifecycle lines are all `INFO`; genuine problems — a round whose result the

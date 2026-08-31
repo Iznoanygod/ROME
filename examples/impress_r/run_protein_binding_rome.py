@@ -56,7 +56,7 @@ async def adaptive_criteria(current_score: float, previous_score: float) -> bool
 
 
 def make_adaptive_decision(rome_manager: rome.Manager, stage_dir: str):
-    """IMPRESS's adaptive_decision with the two ROME-A hooks folded in.
+    """IMPRESS's adaptive_decision with the two ROME hooks folded in.
 
     ``rome_manager`` and ``stage_dir`` are captured because ``adaptive_fn`` has a
     fixed one-argument signature. Everything below the two hooks is IMPRESS's own
@@ -84,7 +84,7 @@ def make_adaptive_decision(rome_manager: rome.Manager, stage_dir: str):
                 # IMPRESS's own migration criterion is the interface pAE.
                 pipeline.current_scores[protein] = float(row['avg_pae'])
 
-                # -- ROME-A HOOK 1: contribute this design to the corpus ------
+                # -- ROME HOOK 1: contribute this design to the corpus ------
                 # The prediction at output_path_af/{protein}.pdb is keyed by
                 # pipeline (not pass) and is deleted on migration, so copy it
                 # aside before recording it — otherwise the corpus would point at
@@ -109,13 +109,13 @@ def make_adaptive_decision(rome_manager: rome.Manager, stage_dir: str):
                 )
                 accepted += uid is not None
 
-        # -- ROME-A HOOK 2: collect the improved model -----------------------
+        # -- ROME HOOK 2: collect the improved model -----------------------
         # The trainer publishes into the ProteinMPNN checkout's weights dir, so
         # the next MPNN pass picks it up with no wrapper change; this just reports
-        # what ROME-A currently has.
+        # what ROME currently has.
         weights = rome_manager.get_current_model()
         pipeline.logger.pipeline_log(
-            f'ROME-A: corpus {rome_manager.data.total_count} (+{accepted} this pass) | '
+            f'ROME: corpus {rome_manager.data.total_count} (+{accepted} this pass) | '
             f'{rome_manager.get_training_status().name}'
             + (f' | model {os.path.basename(weights)}' if weights else '')
         )
@@ -158,7 +158,7 @@ def make_adaptive_decision(rome_manager: rome.Manager, stage_dir: str):
             new_config = {
                 'name': new_name,
                 'type': type(pipeline),
-                # children carry the same ROME-A hooks
+                # children carry the same ROME hooks
                 'adaptive_fn': make_adaptive_decision(rome_manager, stage_dir),
                 'config': {
                     'is_child': True,
@@ -187,7 +187,7 @@ def make_adaptive_decision(rome_manager: rome.Manager, stage_dir: str):
 async def _make_backend():
     """An execution backend that runs tasks in their own processes.
 
-    ROME-A must *not* run its training rounds in the manager's own process: a
+    ROME must *not* run its training rounds in the manager's own process: a
     fine-tune loads ProteinMPNN onto the GPU, and an in-process (local) backend
     would leave that CUDA context and the model resident in the long-lived
     campaign driver for the whole run. A process-based backend runs each round
@@ -218,7 +218,7 @@ def _build_trainer(checkpoint_dir: str):
         ), gpus=1)
 
     if want == 'mpnn':
-        print(f"[ROME-A] ROME_MPNN_REPO={MPNN_REPO!r} not found; "
+        print(f"[ROME] ROME_MPNN_REPO={MPNN_REPO!r} not found; "
               "falling back to the dummy trainer (set ROME_MPNN_REPO or "
               "ROME_TRAINER=dummy to silence this).")
     from rome.dummy import DummyTrainer
@@ -236,7 +236,7 @@ async def impress_protein_bind() -> None:
     """
     workdir = tempfile.mkdtemp(prefix='impress_r_')
 
-    # ROME-A gets its OWN process-based backend, so its training rounds run as
+    # ROME gets its OWN process-based backend, so its training rounds run as
     # tasks in their own processes rather than inside this driver — otherwise a
     # fine-tune's GPU allocation would stay resident in the campaign driver for
     # the whole run (see _make_backend). It builds its engine on this backend at
@@ -277,7 +277,7 @@ async def impress_protein_bind() -> None:
 
     try:
         await manager.start(pipeline_setups=pipeline_setups)
-        print('\nROME-A:', rome_manager.report())
+        print('\nROME:', rome_manager.report())
     finally:
         await manager.flow.shutdown()
         await rome_manager.stop()

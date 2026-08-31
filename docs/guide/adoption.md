@@ -1,6 +1,6 @@
-# Adopting ROME-A
+# Adopting ROME
 
-ROME-A's design goal is that adoption costs a few API calls and the host
+ROME's design goal is that adoption costs a few API calls and the host
 workflow's own code does not move. This page is what those calls are.
 
 ## The four calls
@@ -46,25 +46,25 @@ without the workflow's involvement.
 
 ## Sharing the workflow engine
 
-ROME-A schedules nothing itself. Every training round and every stream task is
+ROME schedules nothing itself. Every training round and every stream task is
 submitted to a `radical.asyncflow` `WorkflowEngine`, and the point of passing in
-the host's is that ROME-A's tasks are scheduled against the *same allocation* as
+the host's is that ROME's tasks are scheduled against the *same allocation* as
 the campaign's own:
 
 ```python
 manager = rome.Manager(impress_manager.flow, ...)
 ```
 
-Leave it out and ROME-A builds its own engine at `start()` and shuts it down at
+Leave it out and ROME builds its own engine at `start()` and shuts it down at
 `stop()`:
 
 ```python
 manager = rome.Manager(backend=my_backend, ...)
 ```
 
-That is the right choice when ROME-A should manage its tasks independently of
+That is the right choice when ROME should manage its tasks independently of
 the host, or when the host creates its engine internally and does not hand one
-out. ROME-A only shuts down an engine it built — a host's engine is still running
+out. ROME only shuts down an engine it built — a host's engine is still running
 the host's tasks.
 
 !!! warning "Don't leave the backend unset for a GPU fine-tune"
@@ -82,22 +82,22 @@ the host's tasks.
 
 ## Sharing the dictionary
 
-ROME-A keeps its shared state in a Dragon `DDict`. By default it allocates one;
+ROME keeps its shared state in a Dragon `DDict`. By default it allocates one;
 pass your own to share the host workflow's:
 
 ```python
 manager = rome.Manager(flow, ddict=impress_ddict, ...)
 ```
 
-Sharing is safe because ROME-A namespaces every key it writes under `rome|`, so
+Sharing is safe because ROME namespaces every key it writes under `rome|`, so
 nothing collides with the workflow's own state. Passing the DDict object into a
 task is all it takes to reach it from another node — Dragon attaches the
 receiving process automatically.
 
-When ROME-A allocates its own, it asks for more room than Dragon's 3 MiB default,
+When ROME allocates its own, it asks for more room than Dragon's 3 MiB default,
 because a campaign corpus of a few thousand records goes past that and the
 failure mode is an allocation error deep inside a manager rather than anything
-ROME-A can explain. Override with `ddict_kwargs`:
+ROME can explain. Override with `ddict_kwargs`:
 
 ```python
 rome.Manager(flow, ddict_kwargs={"n_nodes": 2, "total_mem": 4 * 1024**3})
@@ -109,12 +109,12 @@ queues, so the cost of a replica's poll does not grow with the corpus. See
 
 ## Which halves you need
 
-ROME-A's three managers are independent enough that you can take two of them.
+ROME's three managers are independent enough that you can take two of them.
 
 ### Data + training only
 
 The common case when the host workflow already owns inference. IMPRESS runs its
-own ProteinMPNN and AlphaFold tasks; ROME-A has no business duplicating them, so
+own ProteinMPNN and AlphaFold tasks; ROME has no business duplicating them, so
 IMPRESS-R uses only the data and training halves and hands the improved weights
 back through `get_current_model()`.
 
@@ -128,7 +128,7 @@ manager = rome.Manager(
 
 ### All three
 
-Workflows that also want ROME-A to own inference add stream configs:
+Workflows that also want ROME to own inference add stream configs:
 
 ```python
 manager = rome.Manager(
@@ -194,7 +194,7 @@ manager.report()
 }
 ```
 
-ROME-A also logs one line per lifecycle event, styled to sit alongside IMPRESS's
+ROME also logs one line per lifecycle event, styled to sit alongside IMPRESS's
 own log lines. See [Logging](logging.md).
 
 ## Async context manager

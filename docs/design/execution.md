@@ -1,9 +1,9 @@
 # Execution
 
-**ROME-A schedules nothing itself.** Every training round and every stream task
+**ROME schedules nothing itself.** Every training round and every stream task
 is submitted to the `radical.asyncflow` `WorkflowEngine` the host workflow passes
 in, with per-task resources given as an asyncflow `task_description`. That is not
-a limitation — it is the point. ROME-A's tasks are placed by the same scheduler,
+a limitation — it is the point. ROME's tasks are placed by the same scheduler,
 against the same allocation, as the campaign's own.
 
 There is exactly one place in the codebase that talks to asyncflow:
@@ -23,13 +23,13 @@ submit_task(asyncflow, func, task_description=..., service=..., executable=...)
 
 asyncflow only accepts `async def` bodies. For a function task, a blocking
 trainer or inference call belongs inside an `asyncio.to_thread` — which is what
-ROME-A does, so a synchronous `TrainTask.train` is exactly the right thing to
+ROME does, so a synchronous `TrainTask.train` is exactly the right thing to
 write. For an executable task the body instead returns the command string, the
 same shape IMPRESS uses for its wrapper scripts.
 
 ## Resources
 
-`TrainTask.gpus`/`nodes` and `StreamConfig.num_gpus`/`num_nodes` are ROME-A's
+`TrainTask.gpus`/`nodes` and `StreamConfig.num_gpus`/`num_nodes` are ROME's
 coarse resource fields.
 [`resource_description`][rome.utils.resource_description] turns them into the two
 keys the RADICAL backends share:
@@ -39,7 +39,7 @@ keys the RADICAL backends share:
 ```
 
 The concrete keys an execution backend understands are its own business, so that
-is *all* ROME-A fills in. Anything you pass explicitly wins:
+is *all* ROME fills in. Anything you pass explicitly wins:
 
 ```python
 rome.TrainerConfig(task_description={"ranks": 2, "gpus_per_rank": 4,
@@ -89,7 +89,7 @@ silent. The task body closes over the `StreamTask` **by reference**, and a
 multi-process backend pickles that body from its dispatcher thread *after*
 `Stream.start()` has assigned the submission future to `task.task_fut`. An
 `_asyncio.Future` cannot be pickled, so the dispatcher raises, dies, and **every
-task queued behind it — ROME-A's or the host workflow's — silently never runs.**
+task queued behind it — ROME's or the host workflow's — silently never runs.**
 
 Dropping the future in `__getstate__` makes the body picklable whenever the
 backend gets round to it.
@@ -117,13 +117,13 @@ Dragon backend while using two on the local one.
 
 ## When the backend never delivers a result
 
-This is the sharpest edge in ROME-A's execution story, and it is a real backend
+This is the sharpest edge in ROME's execution story, and it is a real backend
 defect rather than a convenience.
 
 **What happens.** Dragon pre-registers a running task's result key, so *reading*
 that key blocks rather than raising `KeyError`. rhapsody's monitor sweeps its
 outstanding tasks in order, so a task that never completes — which is exactly what
-a ROME-A inference stream is — blocks the sweep on its own key forever. Every
+a ROME inference stream is — blocks the sweep on its own key forever. Every
 result behind it, **including a finished training round**, is never delivered.
 
 Confirmed by direct measurement:
@@ -183,7 +183,7 @@ why the executable path is polled briskly (every 2 s) and published the instant
 it appears, rather than waiting out the full grace period.
 
 For a **function** round the future's return value is the real checkpoint path, so
-ROME-A gives the backend the full grace to deliver it before falling back to the
+ROME gives the backend the full grace to deliver it before falling back to the
 output directory. A failed round still surfaces its exception, because a body that
 raised never writes its output.
 

@@ -1,4 +1,4 @@
-"""ProteinMPNN trainer task — the IMPRESS-R half of ROME-A's trainers.
+"""ProteinMPNN trainer task — the IMPRESS-R half of ROME's trainers.
 
 IMPRESS runs backbone -> ProteinMPNN -> structure prediction -> pLDDT/pTM/pAE
 -> keep/fallback/migrate/drop, and it is open loop: every campaign improves the
@@ -24,7 +24,7 @@ what ProteinMPNN's chain mask expresses, and :func:`build_chain_designation`
 sets it up: designed chains are predicted, context chains are visible but not
 scored.
 
-This trainer is an IMPRESS-R *integration*, not framework core — ROME-A is
+This trainer is an IMPRESS-R *integration*, not framework core — ROME is
 workflow-agnostic — so it lives with the example, beside the inference wrapper
 (``mpnn_wrapper.py``) it complements. Import it from here::
 
@@ -583,7 +583,7 @@ def impress_corpus_filter(
        because everything reaching the score CSVs has already cleared IMPRESS's
        own keep/drop rule — the filter is being applied downstream of itself.
 
-       That campaign was run with **Boltz**, while the branch ROME-A targets
+       That campaign was run with **Boltz**, while the branch ROME targets
        (``archive/ipdps_pdz_usecase``) runs **AlphaFold2-multimer**, and the two
        predictors do not share a confidence scale. Prefer :func:`percentile_sampler`,
        which needs no scale; see ``docs/impress.md``.
