@@ -272,7 +272,7 @@ symptoms, one cause: `dimer_models` populated, `best_models`/`best_ptm` empty,
 
 Two remedies:
 
-* **Already-run campaign:** `scripts/populate_best_models.py` does the copies
+* **Already-run campaign:** `examples/impress_r/populate_best_models.py` does the copies
   from an existing `dimer_models/`, so you can re-run the extractor without
   re-running AlphaFold. It also prints a target's contents when there is no
   `ranked_0` PDB, which distinguishes an AlphaFold run from a Boltz/other one.
@@ -421,15 +421,17 @@ on the scale:
 
 `af_stats_*.csv` from a campaign run on `archive/ipdps_pdz_usecase` with
 `af2_multimer_reduced.sh` — even one pipeline group over a few passes. The
-`scripts/impress_campaign_probe.sh` sections 2 and 6 collect exactly that.
+`examples/impress_r/impress_campaign_probe.sh` sections 2 and 6 collect exactly that.
 
 ## Campaign helper scripts
 
-`scripts/` holds three operational tools for running an IMPRESS campaign. **None
-of them is part of the framework**: nothing in `rome/` imports them, they carry
-no ROME API, and `pyproject.toml` packages only `rome*`, so `pip install rome`
-does not ship them. They are things *you* run from a checkout, by hand, around a
-campaign — closer to the `dragon -s` checks than to library code.
+`examples/impress_r/` ships three operational tools alongside the integration
+code. **None of them is part of the framework**: nothing in `rome/` imports them,
+they carry no ROME API, and `pyproject.toml` packages only `rome*`, so
+`pip install rome` does not ship them. They live with the example because that is
+what they are specific to — an IMPRESS campaign — and they are things *you* run
+from a checkout, by hand, around a run, closer to the `dragon -s` checks than to
+library code.
 
 | Script | When you need it |
 | --- | --- |
@@ -465,8 +467,8 @@ distribution plus a table of candidate thresholds and the fraction each admits.
 Read-only, safe against a directory a live job is writing.
 
 ```bash
-python scripts/af_stats_watch.py /path/to/campaign            # once
-python scripts/af_stats_watch.py /path/to/campaign --follow   # every 60s
+python examples/impress_r/af_stats_watch.py /path/to/campaign            # once
+python examples/impress_r/af_stats_watch.py /path/to/campaign --follow   # every 60s
 ```
 
 It exists because confidence thresholds are predictor-specific. If you use
@@ -477,7 +479,7 @@ and needs no numbers from you.
 ### `impress_campaign_probe.sh` — one-shot campaign forensics
 
 ```bash
-bash scripts/impress_campaign_probe.sh /path/to/prod > campaign_probe.txt
+bash examples/impress_r/impress_campaign_probe.sh /path/to/prod > campaign_probe.txt
 ```
 
 Produces one bounded text file covering the campaign's layout, its score CSV

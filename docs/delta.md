@@ -373,7 +373,7 @@ and selection are different jobs; this does the selecting.
 **Watch the distribution directly.**
 
 ```bash
-python scripts/af_stats_watch.py $IMPRESS_BASE --follow
+python examples/impress_r/af_stats_watch.py $IMPRESS_BASE --follow
 ```
 
 Reads every `af_stats_*.csv` written so far and prints the live distribution

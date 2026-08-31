@@ -174,16 +174,17 @@ rome/            ROME
   utils.py         DDict layout helpers + asyncflow submission
   dummy.py         model-free trainer and streams, for smoke tests
 examples/        ROME adoption examples
-scripts/         operational helpers for running an IMPRESS campaign
+  agnostic/        framework only — no IMPRESS needed
+  impress_r/       the IMPRESS-R integration: trainer, seams, campaign tooling
 tests/           unit, mocked-integration and Dragon checks
 ```
 
 **`rome/` is the framework** — the only thing `pip install` ships. Everything
-beside it is there to be read or run, not imported: `examples/` is adoption code
-(and home to the ProteinMPNN trainer, an IMPRESS-R integration rather than
-framework), and `scripts/` is operational tooling for an IMPRESS campaign. See
-`docs/impress.md` for what each script is for — `populate_best_models.py` in
-particular is needed whenever IMPRESS runs off RadicalExecutionBackend.
+beside it is there to be read or run, not imported. `examples/impress_r/` carries
+everything specific to that campaign: the ProteinMPNN trainer, the pipeline
+seams, and three operational tools. See `docs/impress.md` for what each is for —
+`populate_best_models.py` in particular is needed whenever IMPRESS runs off
+RadicalExecutionBackend.
 
 ## Running it on a cluster
 

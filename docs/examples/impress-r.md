@@ -197,6 +197,20 @@ readably in one campaign log:
 
 See [Logging](../guide/logging.md).
 
+## Campaign tooling
+
+`examples/impress_r/` also ships three things you run by hand around a campaign
+rather than import — they are operational tools, not framework:
+
+| Script | When |
+| --- | --- |
+| `populate_best_models.py` | **Whenever IMPRESS runs off RadicalExecutionBackend.** Its `post_exec` copies never happen there, so `best_models/` stays empty and the corpus silently receives nothing. |
+| `af_stats_watch.py` | While a campaign runs, to watch its confidence distribution. |
+| `impress_campaign_probe.sh` | Once, against a finished campaign, to answer wiring questions. |
+
+[Campaign helper scripts](../impress.md#campaign-helper-scripts) covers what each
+one does and why the first one matters most.
+
 ## API reference
 
 * [`examples.impress_r.mpnn`](../api/examples/impress_r/mpnn.md) —

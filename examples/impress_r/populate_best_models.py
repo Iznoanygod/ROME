@@ -16,9 +16,9 @@ This does those copies after the fact, so you can re-run the extractor without
 re-running AlphaFold. It reads ``dimer_models``; it only writes into
 ``best_models`` and ``best_ptm``.
 
-    python scripts/populate_best_models.py --path <base> --out p1
+    python examples/impress_r/populate_best_models.py --path <base> --out p1
     # or point straight at the prediction dir:
-    python scripts/populate_best_models.py --prediction <base>/af_pipeline_outputs_multi/p1/af/prediction
+    python examples/impress_r/populate_best_models.py --prediction <base>/af_pipeline_outputs_multi/p1/af/prediction
 
 If a target has no ``ranked_0`` PDB, it prints what the target directory *does*
 contain — which is how you tell an AlphaFold run (``ranked_0.pdb``,
