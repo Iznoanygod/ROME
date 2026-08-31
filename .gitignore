@@ -10,12 +10,10 @@ rome_checkpoints/
 site/
 .cache/
 
-# LaTeX build artifacts
-*.aux
+# Stray build and run output
 *.log
 *.out
 *.pdf
-*.synctex.gz
 
 # Dragon leaves DDict orchestrator files in the cwd
 ddict_orc_*

@@ -15,9 +15,8 @@ their real output.
 ## 1. Environment
 
 Delta gives you `/work/nvme` (fast, for code and checkpoints) and `/work/hdd`
-(bulk, for structures and caches). The existing scripts in
-`protein_generation/` already use `/work/nvme/<project>/<user>/...`, so keep
-that layout.
+(bulk, for structures and caches). Keep code and checkpoints on
+`/work/nvme/<project>/<user>/...` and the bulk artifacts on `/work/hdd`.
 
 ```bash
 export PROJ=/work/nvme/bdyk/$USER          # adjust to your project/user
@@ -71,9 +70,7 @@ Sanity check without any HPC involvement:
 pytest -m fast
 ```
 
-Expect **175 passed**, plus 5 pre-existing failures in
-`tests/integration/test_protein_flow_dummy.py`, which exercise the legacy
-`oldrome` protein flow and are unrelated.
+Expect a clean run — every test here is CPU-only and needs no allocation.
 
 ## 4. Install IMPRESS
 
@@ -184,8 +181,7 @@ At this point everything but the science executables is proven on your machine.
 
 Steps (a)–(d) use `LocalExecutionBackend`, which runs task bodies as threads in
 the driver process. For a real allocation you want tasks placed on nodes, which
-is `rhapsody`'s Dragon backend — the same one `protein_generation/dragon_protein_run.py`
-already uses:
+is `rhapsody`'s Dragon backend:
 
 ```python
 from rhapsody.backends import DragonExecutionBackendV3
