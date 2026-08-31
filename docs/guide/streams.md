@@ -7,12 +7,12 @@ API reference: [`rome.stream`](../api/rome/stream.md)
 
 ## Streams are not calls
 
-Inference and reward are not one-shot tasks in ROME-A. They are long-lived
+Inference and reward are not one-shot tasks in ROME. They are long-lived
 tasks — submitted to asyncflow as **services** — that sit on their nodes and keep
 processing requests for the whole campaign. That is what makes a hot weight swap
 possible: there is a running process to swap the weights *in*.
 
-The workflow supplies the actual inference and reward code. ROME-A supplies the
+The workflow supplies the actual inference and reward code. ROME supplies the
 loop around it.
 
 ```python
@@ -64,7 +64,7 @@ def my_infer(inputs, ctx):
   existing scalar-returning reward function can be reused unchanged.
 * It may be sync or async. A blocking function is pushed to a worker thread, so
   one slow inference call cannot stall the other streams sharing the event loop.
-* **The `ctx` argument is optional.** ROME-A inspects the signature and only
+* **The `ctx` argument is optional.** ROME inspects the signature and only
   passes the context when there is somewhere to put it, so existing code shaped
   `f(inputs)` needs no signature change to be adopted.
 
@@ -151,7 +151,7 @@ wires its results straight into the data manager:
 
 * a `process_func` returning a **dict** becomes a corpus record;
 * a `process_func` returning a **number** becomes a record with that score;
-* anything else is left alone — ROME-A does not guess at a shape it does not
+* anything else is left alone — ROME does not guess at a shape it does not
   recognise.
 
 ```python
@@ -247,7 +247,7 @@ between batches. `process_func` is ignored when `stream_func` is set.
 
 [`StreamContext`](../api/rome/stream.md#rome.stream.StreamContext) also exposes
 `ctx.model`, `ctx.model_path`, `ctx.model_version`, `ctx.index` (which replica
-this is), `ctx.ddict` (ROME-A's shared state) and `ctx.stream_ddict` (this
+this is), `ctx.ddict` (ROME's shared state) and `ctx.stream_ddict` (this
 group's own).
 
 ## Configuration reference

@@ -6,7 +6,7 @@ much of a real campaign they involve. Start at the top.
 | Example | What it shows | Needs |
 | --- | --- | --- |
 | [`agnostic/dummy_loop.py`](dummy-loop.md) | The closed loop end to end, with no model. | Nothing. |
-| [`impress_r/dummy_adaptive_rome.py`](impress-r.md#the-smallest-integration) | Two lines of ROME-A inside a real host workflow's adaptive step. | IMPRESS. |
+| [`impress_r/dummy_adaptive_rome.py`](impress-r.md#the-smallest-integration) | Two lines of ROME inside a real host workflow's adaptive step. | IMPRESS. |
 | [`agnostic/impress_r.py`](impress-r.md#the-four-calls-against-a-stand-in-pipeline) | The data + training halves against a stand-in pipeline. | Nothing. |
 | [`agnostic/llm_grpo_streams.py`](llm-grpo.md) | All three managers: generation and scoring as streams, GRPO training. | A GPU, TRL, a HF model. |
 | [`impress_r/adaptive_rome.py`](impress-r.md#the-real-seam-with-executables-stubbed) | The real campaign seam with the executables stubbed, so it runs anywhere. | IMPRESS. |
@@ -15,7 +15,7 @@ much of a real campaign they involve. Start at the top.
 ## Running them
 
 Anything that touches the Dragon `DDict` — which is everything, since that is
-where ROME-A keeps its state — runs under the Dragon launcher:
+where ROME keeps its state — runs under the Dragon launcher:
 
 ```bash
 dragon examples/agnostic/dummy_loop.py          # single node
@@ -41,7 +41,7 @@ whole campaign. See [Execution](../design/execution.md#why-a-gpu-round-should-be
 
 `rome.train.llm.GRPOTrainer` ships with the framework. `ProteinMPNNTrainer` does
 **not** — it lives in `examples/impress_r/mpnn.py`, because it is an IMPRESS-R
-integration and ROME-A is workflow agnostic. Import it from there:
+integration and ROME is workflow agnostic. Import it from there:
 
 ```python
 from examples.impress_r.mpnn import ProteinMPNNConfig, ProteinMPNNTrainer

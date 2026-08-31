@@ -1,4 +1,4 @@
-"""Dragon smoke test: the whole ROME-A loop on a real DDict.
+"""Dragon smoke test: the whole ROME loop on a real DDict.
 
     dragon -s tests/dragon/test_manager_dragon.py
 
@@ -99,7 +99,7 @@ async def run():
     )
     flow = await WorkflowEngine.create(backend=backend)
 
-    # Shared with a "host workflow" key, to prove ROME-A stays in its namespace.
+    # Shared with a "host workflow" key, to prove ROME stays in its namespace.
     ddict = DDict(managers_per_node=1, n_nodes=1,
                   total_mem=int(os.environ.get("ROME_DDICT_MEM", 256 * 1024 ** 2)))
     ddict["host_workflow_state"] = {"campaign": "smoke"}
@@ -270,7 +270,7 @@ async def run():
                 if isinstance(k, str) and not k.startswith("rome|")
                 and k != "host_workflow_state"
             ]
-            assert not stray, f"ROME-A wrote outside its namespace: {stray[:5]}"
+            assert not stray, f"ROME wrote outside its namespace: {stray[:5]}"
 
         check("host workflow keys untouched", host_workflow_keys_untouched)
 
@@ -294,7 +294,7 @@ def main():
     if FAILURES:
         print(f"{len(FAILURES)} FAILED: {', '.join(FAILURES)}")
         return 1
-    print("ROME-A works on Dragon")
+    print("ROME works on Dragon")
     return 0
 
 

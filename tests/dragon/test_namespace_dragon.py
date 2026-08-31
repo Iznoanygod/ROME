@@ -1,4 +1,4 @@
-"""Dragon smoke test: does ROME-A's DDict layout actually work on a real DDict?
+"""Dragon smoke test: does ROME's DDict layout actually work on a real DDict?
 
 Run under the Dragon runtime, which the rest of the test suite cannot do::
 
@@ -9,7 +9,7 @@ session. It exits non-zero on the first failure.
 
 What it checks is exactly the set of DDict operations :mod:`rome.utils` relies
 on, and that is a deliberately short list: single-key get/set/delete, a
-``keys()`` scan, and picklable values. Everything above it in ROME-A is built
+``keys()`` scan, and picklable values. Everything above it in ROME is built
 from those, so if they hold here the rest follows.
 """
 
@@ -54,7 +54,7 @@ def main():
 
         def missing_key_returns_default():
             # rome.utils.Namespace.get catches (KeyError, TypeError); if Dragon
-            # raises something else, every `.get(..., default)` in ROME-A breaks.
+            # raises something else, every `.get(..., default)` in ROME breaks.
             assert ns.get("nope") is None
             assert ns.get("nope", 7) == 7
 
@@ -102,7 +102,7 @@ def main():
             assert int(fresh.get(MODEL_VERSION_KEY, 0)) == 0
 
         def host_workflow_keys_are_untouched():
-            # ROME-A namespaces everything so a shared DDict is safe.
+            # ROME namespaces everything so a shared DDict is safe.
             assert ddict["someone_elses_key"] == "host workflow state"
 
         def event_contract():

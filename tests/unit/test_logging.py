@@ -1,6 +1,6 @@
-"""ROME-A's IMPRESS-style logging: format shape and lifecycle events.
+"""ROME's IMPRESS-style logging: format shape and lifecycle events.
 
-The logger exists so a campaign operator can *see* ROME-A working alongside
+The logger exists so a campaign operator can *see* ROME working alongside
 IMPRESS. Two things must hold: the line shape matches IMPRESS's
 ``HH:MM:SS.mmm [LEVEL] [COMPONENT]``, and the events the user asked for — a
 design received, a round submitted, a model published — actually reach the log.

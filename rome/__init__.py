@@ -1,6 +1,6 @@
-"""ROME-A: RADICAL Optimizer for Model Enhancement, Agnostic.
+"""ROME: the RADICAL Optimizer for Model Enhancement.
 
-ROME-A provides model improvement as a component you bolt onto a workflow you
+ROME provides model improvement as a component you bolt onto a workflow you
 already have, rather than as a workflow you have to adopt. Three managers, each
 a configurable unit:
 

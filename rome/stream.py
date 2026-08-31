@@ -1,13 +1,13 @@
 """Stream Manager — persistent asynchronous inference and reward streams.
 
-Inference and reward are not one-shot calls in ROME-A; they are long-lived
+Inference and reward are not one-shot calls in ROME; they are long-lived
 tasks that sit on their nodes and keep processing requests for the whole
 campaign. The stream manager owns them: it submits them to asyncflow as
 services, feeds them requests from anywhere in the host workflow, collects
 their outputs, and — the part that closes ROME's loop — hot-swaps their weights
 whenever the training manager publishes a newer checkpoint.
 
-The workflow supplies the actual inference and reward code. ROME-A supplies the
+The workflow supplies the actual inference and reward code. ROME supplies the
 loop around it::
 
     await rome.stream.start(StreamConfig(
@@ -211,7 +211,7 @@ class StreamContext:
 
     @property
     def ddict(self) -> Namespace:
-        """ROME-A's shared state — the same view the managers use."""
+        """ROME's shared state — the same view the managers use."""
         return self._task.root
 
     @property
@@ -258,7 +258,7 @@ class StreamTask:
         self.ddict = ddict
         """This stream group's slice of the DDict (requests, results, status)."""
         self.root = root
-        """ROME-A's root namespace, where the published checkpoint lives."""
+        """ROME's root namespace, where the published checkpoint lives."""
         self.task_fut = task_fut
         self.reload_event = Event()
         self.stop_event = Event()
@@ -276,7 +276,7 @@ class StreamTask:
     #: object by reference, and a multi-process backend pickles that body from
     #: its dispatcher thread *after* :meth:`StreamManager.start` has assigned
     #: the submission future here. An ``_asyncio.Future`` cannot be pickled, so
-    #: the dispatcher raises, dies, and every task queued behind it -- ROME-A's
+    #: the dispatcher raises, dies, and every task queued behind it -- ROME's
     #: or the host workflow's -- silently never runs. Dropping it here makes the
     #: body picklable whenever the backend gets round to it.
     _DRIVER_ONLY = ("task_fut",)
@@ -402,7 +402,7 @@ class Stream:
     Parameters
     ----------
     ddict : Namespace
-        ROME-A's shared state, holding the published checkpoint.
+        ROME's shared state, holding the published checkpoint.
     asyncflow : WorkflowEngine
         Engine the stream tasks are submitted to, as services.
     """
@@ -779,7 +779,7 @@ def _accepts_context(func: Callable) -> bool:
     """Whether ``func`` wants the ROME context as its second positional argument.
 
     Existing inference and reward code usually has the shape ``f(inputs)``.
-    Adopting ROME-A should not force a signature change, so the context is only
+    Adopting ROME should not force a signature change, so the context is only
     passed when there is somewhere to put it.
     """
     try:

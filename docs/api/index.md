@@ -28,7 +28,7 @@ their whole API on one object. Adoption is `Manager(...)`, `start()`,
 | [`examples.impress_r.mpnn`](examples/impress_r/mpnn.md) | `ProteinMPNNTrainer`, `ProteinMPNNConfig`, `percentile_sampler` — the IMPRESS-R integration. |
 
 `examples.impress_r.mpnn` ships with the example rather than with the framework,
-because ROME-A is workflow agnostic and the ProteinMPNN trainer is an IMPRESS-R
+because ROME is workflow agnostic and the ProteinMPNN trainer is an IMPRESS-R
 integration. It is documented here because it is public API for anyone adopting
 IMPRESS-R.
 

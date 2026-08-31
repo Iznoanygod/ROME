@@ -124,7 +124,7 @@ nav:
       - Installation: installation.md
       - Quickstart: quickstart.md
   - User Guide:
-      - Adopting ROME-A: guide/adoption.md
+      - Adopting ROME: guide/adoption.md
       - Data Manager: guide/data.md
       - Training Manager: guide/training.md
       - Stream Manager: guide/streams.md
@@ -134,7 +134,7 @@ nav:
       - Architecture: design/architecture.md
       - Shared state: design/state.md
       - Execution: design/execution.md
-      - ROME-A on Dragon: dragon.md
+      - ROME on Dragon: dragon.md
   - Examples:
       - Overview: examples/index.md
       - The dummy loop: examples/dummy-loop.md
@@ -159,7 +159,7 @@ plugins:
       enable_inventory: true
       handlers:
         python:
-          # ROME-A is a flat package at the repo root, and the IMPRESS-R trainer
+          # ROME is a flat package at the repo root, and the IMPRESS-R trainer
           # lives under examples/. Both are read statically by griffe, so the
           # reference builds without Dragon, torch or a GPU installed.
           paths: [.]

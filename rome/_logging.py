@@ -1,18 +1,18 @@
-"""ROME-A logging — one line per lifecycle event, styled to match IMPRESS.
+"""ROME logging — one line per lifecycle event, styled to match IMPRESS.
 
-ROME-A schedules training out of sight of the host workflow, so a campaign
+ROME schedules training out of sight of the host workflow, so a campaign
 operator needs to *see* what it is doing: when a design arrives, when a round is
 submitted, when a new model is published. This wires a single stdout handler on
 the ``rome`` logger namespace whose output mirrors IMPRESS's
 ``impress.utils.logger.ImpressLogger`` — same ``HH:MM:SS.mmm [LEVEL]
-[COMPONENT]`` shape and the same per-level / per-component colours — so ROME-A's
+[COMPONENT]`` shape and the same per-level / per-component colours — so ROME's
 lines sit alongside IMPRESS's ``[PIPELINE-P1]`` lines in one run::
 
     12:34:56.789 [INFO] [ROME-DATA] received design 8oep (pLDDT=95.0) — corpus 8
     12:34:57.001 [INFO] [ROME-TRAINER] submitting training round 1 (8 designs)
     12:34:58.512 [INFO] [ROME-MODEL] published v1 -> .../v_48_020.pt
 
-It matches IMPRESS's *format* without importing IMPRESS, so ROME-A keeps working
+It matches IMPRESS's *format* without importing IMPRESS, so ROME keeps working
 in workflows that have nothing to do with it (the LLM/GRPO trainer, the dummy
 loop). The handler is attached once, lazily, and only if the ``rome`` logger has
 none, so an application that configures its own logging keeps control.
@@ -117,7 +117,7 @@ def get_logger(name: str = _ROOT) -> logging.Logger:
 
     ``name`` is usually ``__name__`` (``rome.trainer`` -> the ``[ROME-TRAINER]``
     tag). A bare label is placed under ``rome.`` too, so one level and one
-    handler govern all of ROME-A's logging.
+    handler govern all of ROME's logging.
     """
     if not _configured:
         _configure()

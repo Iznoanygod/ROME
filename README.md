@@ -6,17 +6,12 @@ The RADICAL Optimizer for Model Enhancement (ROME).
 notes and API reference. Build it locally with
 `pip install -r docs/requirements.txt && mkdocs serve`.
 
-## ROME-A
+## What it is
 
-The original ROME exposed self-improvement as a workflow with three components —
-model inference, reward/simulation, and model training. Building a new
-improvement workflow with ROME was easy; plugging ROME into a workflow you
-already had was not.
-
-**ROME-A** makes ROME workflow agnostic. Model improvement becomes a set of
-pluggable modules you add to an existing workflow rather than a workflow you
-adopt. Each component is a configurable unit, adding a new model or training
-algorithm is a single task, and adoption costs a few API calls.
+ROME is workflow agnostic. Model improvement is a set of pluggable modules you
+add to a workflow you already have, rather than a workflow you adopt. Each
+component is a configurable unit, adding a new model or training algorithm is a
+single task, and adoption costs a few API calls.
 
 ### The three managers
 
@@ -62,7 +57,7 @@ await manager.stop()
 Training starts automatically once `min_samples` fresh records accumulate, or
 on demand via `await manager.start_training()`.
 
-Workflows that also want ROME-A to own inference add stream configs:
+Workflows that also want ROME to own inference add stream configs:
 
 ```python
 manager = rome.Manager(
@@ -93,18 +88,18 @@ rome.TrainerConfig(trainer=MyTrainer(gpus=4, nodes=2))
 ```
 
 A bare `(dataset, output_dir, **kwargs) -> checkpoint_path` function works too —
-it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME-A:
+it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME:
 `rome.train.llm.GRPOTrainer` (TRL/GRPO for LLMs) and
 `examples.impress_r.mpnn.ProteinMPNNTrainer` (IMPRESS-R).
 
 ### Runtime
 
-ROME-A schedules nothing itself. Training rounds and stream tasks are submitted
+ROME schedules nothing itself. Training rounds and stream tasks are submitted
 to the `radical.asyncflow` `WorkflowEngine` the host workflow passes in, with
 per-task resources given as an asyncflow `task_description`.
 
 Shared state lives in Dragon `DDict`s. The manager's holds the corpus and the
-published checkpoint — pass your own via `Manager(..., ddict=...)` and ROME-A
+published checkpoint — pass your own via `Manager(..., ddict=...)` and ROME
 namespaces its keys under `rome|` so nothing collides with the workflow's own.
 Each stream group gets a **separate** dictionary for its request and result
 queues, so the cost of a replica's poll does not grow with the corpus; supply
@@ -114,7 +109,7 @@ queues, so the cost of a replica's poll does not grow with the corpus; supply
 
 IMPRESS runs backbone → ProteinMPNN → structure prediction → pLDDT/pTM/pAE →
 keep/fallback/migrate/drop. It is open loop: each campaign improves the designs,
-never the model. IMPRESS-R adds ROME-A so the campaign's own highest-confidence
+never the model. IMPRESS-R adds ROME so the campaign's own highest-confidence
 sequences fine-tune ProteinMPNN mid-campaign, and the improved model returns to
 the pipeline. IMPRESS itself runs unchanged.
 
@@ -122,7 +117,7 @@ See `examples/agnostic/impress_r.py` (data + training) and
 `examples/agnostic/llm_grpo_streams.py` (all three managers).
 
 `examples/impress_r/dummy_adaptive_rome.py` is the smallest version of the
-integration: IMPRESS's own dummy adaptive example with **two lines of ROME-A**
+integration: IMPRESS's own dummy adaptive example with **two lines of ROME**
 added inside `adaptive_fn` — `add_training_data` to contribute a generation's
 designs, `get_current_model` to collect the improved model — and the
 `DummyTrainer` running a round on its own once enough designs arrive. Start here.
@@ -130,7 +125,7 @@ designs, `get_current_model` to collect the improved model — and the
 `examples/impress_r/protein_binding_rome.py` is the real campaign:
 IMPRESS's own `run_protein_binding.py` driving the real `ProteinBindingPipeline`
 (MPNN → AlphaFold → pLDDT extraction, the migration logic, all of it), with the
-two ROME-A calls added inside `adaptive_decision` and nothing else changed. It
+two ROME calls added inside `adaptive_decision` and nothing else changed. It
 fine-tunes ProteinMPNN and publishes the new weights back into the checkout so
 the next pass runs them. Run it from the usecase directory on Delta; the hook
 wiring is covered offline by `tests/unit/test_impress_r_hooks.py`.
@@ -170,7 +165,7 @@ The version climbs while the stream keeps serving; it is never restarted.
 ## Layout
 
 ```
-rome/            ROME-A
+rome/            ROME
   manager.py       Manager — wires the three components together
   data.py          Data Manager
   stream.py        Stream Manager
@@ -178,15 +173,15 @@ rome/            ROME-A
   train/           trainer tasks (base, llm/GRPO)
   utils.py         DDict layout helpers + asyncflow submission
   dummy.py         model-free trainer and streams, for smoke tests
-oldrome/         the original ROME flows, kept for reference
-examples/        ROME-A adoption examples
+oldrome/         the earlier flow-based implementation, kept for reference
+examples/        ROME adoption examples
 protein_generation/  IMPRESS pipeline scripts
 ```
 
 ## Running it on a cluster
 
 `docs/delta.md` is the end-to-end setup: environment, installing Dragon,
-ROME-A and IMPRESS, a smoke-test ladder that proves one layer at a time, a
+ROME and IMPRESS, a smoke-test ladder that proves one layer at a time, a
 Slurm script, and what still needs swapping in for a real campaign.
 
 ## Tests
@@ -228,5 +223,5 @@ mkdocs build --strict        # what CI runs
 | HPC | The existing Delta, IMPRESS and ProteinMPNN notes. |
 | API Reference | Generated from the source at build time, so it cannot drift. |
 
-The API reference needs none of ROME-A's runtime dependencies — mkdocstrings
+The API reference needs none of ROME's runtime dependencies — mkdocstrings
 reads the source statically — so the docs build on any machine.

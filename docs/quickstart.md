@@ -1,6 +1,6 @@
 # Quickstart
 
-This page runs ROME-A's closed loop end to end — inference, scoring, training, a
+This page runs ROME's closed loop end to end — inference, scoring, training, a
 hot weight swap — in under a minute, with no model, no GPU and no cluster.
 
 Everything real about the run is the machinery. Tasks are placed by the workflow
@@ -36,7 +36,7 @@ on its own.
 
 ## What the script does
 
-The whole example is ~90 lines. Its shape is the shape of every ROME-A adoption.
+The whole example is ~90 lines. Its shape is the shape of every ROME adoption.
 
 ### 1. Build a manager
 
@@ -155,7 +155,7 @@ never-returning service task that holds an execution slot for the whole run:
   GPU-less node, or the task is accepted and never placed.
 
 A third, `ROME_FALLBACK`, sets `result_fallback_seconds`. On Dragon a finished
-round's result can go undelivered while a stream service is running; ROME-A then
+round's result can go undelivered while a stream service is running; ROME then
 publishes from disk after that grace period. The default of 60 s is right for a
 multi-minute real round and far longer than this whole demo, so the example
 lowers it to 4 s. [Why that fallback exists](design/execution.md#when-the-backend-never-delivers-a-result)
@@ -163,7 +163,7 @@ is worth reading before you tune it.
 
 ## Next
 
-* [Adopting ROME-A](guide/adoption.md) — the same loop, attached to a workflow
+* [Adopting ROME](guide/adoption.md) — the same loop, attached to a workflow
   you already have.
 * [Examples](examples/index.md) — the LLM/GRPO version with all three managers,
   and the real IMPRESS-R campaign.

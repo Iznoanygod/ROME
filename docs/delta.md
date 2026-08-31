@@ -1,13 +1,13 @@
-# Setting up ROME-A + IMPRESS on Delta
+# Setting up ROME + IMPRESS on Delta
 
 End-to-end: environment, install, a ladder of smoke tests that each prove one
-more layer, then running an IMPRESS campaign with ROME-A attached.
+more layer, then running an IMPRESS campaign with ROME attached.
 
 **What has actually been verified, and where.** Everything below was run on a
 single-node Linux box with Dragon 0.14.1 — not on Delta. The Delta-specific
 parts (module names, partitions, account, `sbatch` shape) are marked where they
 need checking against your allocation. The software parts — Dragon, asyncflow,
-ROME-A, IMPRESS, and the two of them together — were run and are reported with
+ROME, IMPRESS, and the two of them together — were run and are reported with
 their real output.
 
 ---
@@ -126,7 +126,7 @@ ok    drain claims exactly once
 all DDict/Event checks passed
 ```
 
-**(b) The whole ROME-A loop — 4 stream replicas, a trainer, one real DDict.**
+**(b) The whole ROME loop — 4 stream replicas, a trainer, one real DDict.**
 
 ```bash
 dragon -s tests/dragon/test_manager_dragon.py && dragon-cleanup-deprecated
@@ -136,7 +136,7 @@ ok    every request answered exactly once
 ok    concurrent writers lose nothing
 ok    training fired and published
 ok    streams swapped onto the checkpoint
-ROME-A works on Dragon
+ROME works on Dragon
 ```
 
 **(c) The worked example — watch a model version climb while inference serves.**
@@ -156,13 +156,13 @@ ROME_BACKEND=dragon ROME_STREAM_REPLICAS=1 ROME_GPUS=0 \
 ```
 
 The version still climbs, but two things differ and both are backend facts, not
-ROME-A ones (see §6 and `docs/dragon.md`): keep `ROME_STREAM_REPLICAS` below the
+ROME ones (see §6 and `docs/dragon.md`): keep `ROME_STREAM_REPLICAS` below the
 allocation's concurrent-task capacity so the round gets a slot, and the round's
 result is published *from disk* after a short grace because a stream service task
 blocks rhapsody's result delivery. On a real multi-node allocation raise the
 replica count and leave the fallback at its minutes-scale default.
 
-**(d) IMPRESS-R — real IMPRESS pipeline, real ROME-A, stubbed executables.**
+**(d) IMPRESS-R — real IMPRESS pipeline, real ROME, stubbed executables.**
 
 ```bash
 dragon -s examples/impress_r/adaptive_rome.py && dragon-cleanup-deprecated
@@ -170,10 +170,10 @@ dragon -s examples/impress_r/adaptive_rome.py && dragon-cleanup-deprecated
 ```
 [PIPELINE-P1] pass 1 | mpnn=proteinmpnn_v_48_020.pt
 [PIPELINE-P1] corpus 4 (+4 this pass) | WAITING
-[PIPELINE-P1] ROME-A published v1
+[PIPELINE-P1] ROME published v1
 [PIPELINE-P1] pass 3 | mpnn=.../checkpoints/dummy/v1      <-- campaign swapped
 ...
-[PIPELINE-P1] ROME-A published v7
+[PIPELINE-P1] ROME published v7
 ```
 
 At this point everything but the science executables is proven on your machine.
@@ -194,7 +194,7 @@ backend = DragonExecutionBackendV3({
     "num_nodes": 2,                     # defaults to the whole allocation
     "results_ddict_mem": 4 * 1024**3,   # raise for large returns / many tasks
 })
-manager = rome.Manager(backend=backend, ...)   # ROME-A builds its own engine
+manager = rome.Manager(backend=backend, ...)   # ROME builds its own engine
 ```
 
 `batch_kwargs` are forwarded verbatim to `dragon.workflows.batch.Batch()`.
@@ -216,18 +216,18 @@ Two things this turned up that you will hit:
   checkpoints were on disk. Only the returned checkpoint path crosses back.
   Write results to the DDict or to disk, not to instance attributes.
 * **`DDict.get(key, default)` hangs.** Not raises — hangs. Use `d[key]` in a
-  `try/except KeyError`. ROME-A's `Namespace.get` already does; this matters if
+  `try/except KeyError`. ROME's `Namespace.get` already does; this matters if
   you touch a DDict directly in your own pipeline code.
 
 **Streams work on this backend.** They did not until recently, and the cause was
-a ROME-A bug rather than anything about Dragon:
+a ROME bug rather than anything about Dragon:
 
 `StreamManager.start()` submits a body that closes over the `StreamTask` **by
 reference**, then assigns the returned future to `task.task_fut`. A
 multi-process backend pickles that body from its dispatcher thread, which
 happens *after* the assignment — so the task now carries an `_asyncio.Future`,
 `cannot pickle '_asyncio.Future' object` is raised inside the dispatcher, and
-the dispatcher thread dies. Every task queued behind it, ROME-A's or the host
+the dispatcher thread dies. Every task queued behind it, ROME's or the host
 workflow's, then silently never runs. `LocalExecutionBackend` never pickles
 anything, which is why the bug was invisible there.
 

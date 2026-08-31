@@ -1,4 +1,4 @@
-"""Why does a ROME-A stream not start on the Dragon execution backend?
+"""Why does a ROME stream not start on the Dragon execution backend?
 
     dragon -s tests/dragon/test_stream_pickle_dragon.py
 

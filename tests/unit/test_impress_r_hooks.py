@@ -3,7 +3,7 @@
 ``examples/impress_r/protein_binding_rome.py`` adds two calls to IMPRESS's
 ``adaptive_decision``. The pipeline itself needs GPUs and the science
 executables, but the hook logic — read the score CSV, copy the prediction aside,
-pull the ranked sequence, contribute to ROME-A — is plain Python and is exactly
+pull the ranked sequence, contribute to ROME — is plain Python and is exactly
 where a wiring bug would hide. This drives it with a fake pipeline and a manager
 double, on the *first pass* (IMPRESS's migration branch just saves scores and
 returns), so it exercises the hooks without the migration machinery.

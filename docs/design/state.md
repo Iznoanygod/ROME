@@ -1,6 +1,6 @@
 # Shared state
 
-Every ROME-A component reads and writes the same distributed dictionary. That is
+Every ROME component reads and writes the same distributed dictionary. That is
 what lets a task on one node add training data that a training task on another
 node picks up, and what lets a stream replica in a third process see that a new
 checkpoint has been published.
@@ -22,7 +22,7 @@ makes it pleasant to work with — and the place where the rules that make it
     This loses records the moment two nodes do it at once. It is the obvious way
     to store a corpus in a key-value store, and it is wrong.
 
-So ROME-A gives **every record, request and result its own key**, and rebuilds
+So ROME gives **every record, request and result its own key**, and rebuilds
 collections by scanning a key prefix. A single-key write in a DDict is atomic, so
 nothing is ever clobbered, no matter how many producers there are.
 
@@ -60,16 +60,16 @@ operations:
 | `keys(prefix="")` | Namespace-relative keys, optionally filtered further. |
 | `items()` / `values()` | Pairs under a prefix, **skipping keys that vanish mid-scan**. |
 | `drain(prefix, limit)` | Pop and return up to `limit` pairs. The claim primitive. |
-| `increment(key, n)` | Bump an integer counter. Only safe when one component owns it — ROME-A keeps to that. |
+| `increment(key, n)` | Bump an integer counter. Only safe when one component owns it — ROME keeps to that. |
 | `snapshot()` | A plain `dict` copy, for logging and debugging. |
 
-Because any mapping works underneath, every ROME-A component is unit-testable
+Because any mapping works underneath, every ROME component is unit-testable
 against a plain `dict` with no Dragon installed. That is why the test suite runs
 `pytest -m fast` on a laptop.
 
 ## `pop` is an exactly-once claim
 
-ROME-A's claim protocol is one line: **whoever pops a key owns that item.**
+ROME's claim protocol is one line: **whoever pops a key owns that item.**
 
 ```python
 batch = self._requests.drain(limit=batch_size)
@@ -86,7 +86,7 @@ with zero duplicates.**
 `Namespace.pop` is deliberately single-argument at the DDict layer:
 `dict.pop(k, default)` returns the default, while `DDict.pop(k, default)` raises
 `DDictKeyError` regardless. Asking for a default would behave differently on the
-two backings, so ROME-A catches `KeyError` (which `DDictKeyError` subclasses)
+two backings, so ROME catches `KeyError` (which `DDictKeyError` subclasses)
 instead, and behaves identically on both.
 
 ## A DDict handle is not thread-safe
@@ -98,7 +98,7 @@ instead, and behaves identically on both.
     `dragon.fli.DragonFLIEOT`, usually raised from an unrelated, later operation —
     so the traceback points nowhere near the cause.
 
-    It is not hypothetical. ROME-A runs the manager's event loop and its
+    It is not hypothetical. ROME runs the manager's event loop and its
     `asyncio.to_thread` stream workers in one process against one dictionary,
     which reproduces it within a few hundred operations.
 
@@ -123,7 +123,7 @@ form rather than recomputing it, because child views are created on hot paths.
 When the backing is a plain mapping (`serialized is None`), it is returned
 unchanged. That is the unit-test and single-process case.
 
-Full account: [ROME-A on Dragon](../dragon.md).
+Full account: [ROME on Dragon](../dragon.md).
 
 ## Why each stream group owns a dictionary
 
@@ -154,7 +154,7 @@ The manager's dictionary is still read from a stream — read-only, for the
 published checkpoint — but that is a single-key get, not a scan.
 
 Group dictionaries default to 256 MiB against the manager's 1 GiB, for the same
-reason. Supply your own with `StreamConfig(ddict=...)` and ROME-A will not
+reason. Supply your own with `StreamConfig(ddict=...)` and ROME will not
 destroy it on teardown.
 
 ## What is still O(corpus)
@@ -203,4 +203,4 @@ than raising.
 | `status\|<i>` *(group dict)* | replica `i` | `get_status`, cross-node |
 
 The `rome|` prefix is what makes sharing the host workflow's dictionary safe:
-[`ROME_NS`][rome.manager.ROME_NS] isolates every key ROME-A writes.
+[`ROME_NS`][rome.manager.ROME_NS] isolates every key ROME writes.

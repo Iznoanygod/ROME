@@ -6,9 +6,9 @@ reads the modules statically (griffe parses them rather than importing them),
 which is what lets the reference build on a machine with no Dragon, no torch and
 no GPU.
 
-``EXTRA_PACKAGES`` is why this is not quite the stock script: ROME-A's
+``EXTRA_PACKAGES`` is why this is not quite the stock script: ROME's
 ProteinMPNN trainer ships with the IMPRESS-R *example* rather than with the
-framework, because ROME-A is workflow agnostic — but it is public API for anyone
+framework, because ROME is workflow agnostic — but it is public API for anyone
 adopting IMPRESS-R, so it belongs in the reference too.
 """
 

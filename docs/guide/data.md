@@ -199,7 +199,7 @@ When the corpus exceeds the cap, the oldest records are evicted on the next
     `DDict.keys()` scan **silently returns a truncated list** when another client
     pops concurrently — one measured scan returned 39 of 400 keys and reported
     success. With no evictions the corpus is never popped, so scans are exact and
-    the training shard is complete. See [ROME-A on Dragon](../dragon.md).
+    the training shard is complete. See [ROME on Dragon](../dragon.md).
 
 ## Counters
 

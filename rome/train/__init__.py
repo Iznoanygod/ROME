@@ -1,4 +1,4 @@
-"""Training algorithms available to ROME-A's training manager.
+"""Training algorithms available to ROME's training manager.
 
 Adding one is a single task: subclass :class:`~rome.train.base.TrainTask`,
 implement ``train(dataset, output_dir) -> checkpoint_path``, and hand the

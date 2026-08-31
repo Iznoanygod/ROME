@@ -5,7 +5,7 @@ keep/fallback/migrate/drop. It is **open loop**: each campaign improves the
 designs, never the model. Every campaign starts from the same public ProteinMPNN
 weights, no matter how much the previous one learned.
 
-**IMPRESS-R** adds ROME-A so the campaign's own highest-confidence sequences
+**IMPRESS-R** adds ROME so the campaign's own highest-confidence sequences
 fine-tune ProteinMPNN mid-campaign, and the improved model returns to the
 pipeline. **IMPRESS itself runs unchanged.**
 
@@ -15,7 +15,7 @@ flowchart LR
     P --> AD["adaptive_decision<br/><small>keep / fallback / migrate / drop</small>"]
     AD --> B
 
-    AD -. "add_training_data()" .-> R["ROME-A<br/>Data + Training"]
+    AD -. "add_training_data()" .-> R["ROME<br/>Data + Training"]
     R -. "publish_into_repo" .-> M
 
     style R fill:#2e7d32,color:#fff
@@ -33,7 +33,7 @@ one incompatibility, what was verified — is in
 
 IMPRESS's own `examples/dummy_adaptive.py` — the minimal adaptive pipeline,
 `sequence_analysis → fitness_evaluation → [adaptive step] → optimization_step`,
-with random child-pipeline spawning — with **two lines of ROME-A** added inside
+with random child-pipeline spawning — with **two lines of ROME** added inside
 the adaptive function:
 
 ```python
@@ -41,7 +41,7 @@ manager.add_training_data(...)     # this generation's designs
 manager.get_current_model()        # the improved model, if any
 ```
 
-Nothing else changes. ROME-A's training manager watches the corpus those
+Nothing else changes. ROME's training manager watches the corpus those
 contributions build and, once `min_samples` designs have arrived, runs a round on
 its own — here the `DummyTrainer`. The next generation to call
 `get_current_model` picks it up. **The pipeline code never schedules training and
@@ -60,7 +60,7 @@ dragon -s examples/impress_r/dummy_adaptive_rome.py
 `examples/agnostic/impress_r.py`
 
 The same shape without needing IMPRESS installed: `run_impress_cycle` stands in
-for the pipeline and runs unchanged, and ROME-A is four calls — build a manager,
+for the pipeline and runs unchanged, and ROME is four calls — build a manager,
 contribute, collect, stop.
 
 ```bash
@@ -83,9 +83,9 @@ The point is the seam. `adaptive_decision(pipeline)` runs after the
 pLDDT-extraction task of every pass, reads
 `af_stats_{name}_pass_{n}.csv`, and decides which designs regressed. That is the
 natural — and only — place where a campaign both *has* fresh scored designs and is
-*between* passes, so it is where both halves of ROME-A belong.
+*between* passes, so it is where both halves of ROME belong.
 
-`run()` never mentions ROME-A, and the degradation logic that spawns child
+`run()` never mentions ROME, and the degradation logic that spawns child
 pipelines is IMPRESS's own, untouched.
 
 ```bash
@@ -101,7 +101,7 @@ The hook wiring is covered offline by `tests/unit/test_impress_r_hooks.py`.
 
 IMPRESS's own `run_protein_binding.py` driving the real `ProteinBindingPipeline` —
 MPNN → AlphaFold → pLDDT extraction, the migration logic, all of it — with the two
-ROME-A calls added inside `adaptive_decision` and nothing else changed. Run it
+ROME calls added inside `adaptive_decision` and nothing else changed. Run it
 from the usecase directory on Delta.
 
 ### Hook 1: contribute
@@ -140,7 +140,7 @@ weights = rome_manager.get_current_model()
 
 With `publish_into_repo=True` the trainer writes the new weights straight into the
 ProteinMPNN checkout's `vanilla_model_weights/`, so **the next MPNN pass picks
-them up with no wrapper change**. Hook 2 is therefore only reporting what ROME-A
+them up with no wrapper change**. Hook 2 is therefore only reporting what ROME
 currently has — the handover already happened.
 
 ### Wiring
@@ -165,7 +165,7 @@ await rome_manager.start()
 
 Three choices worth copying:
 
-**ROME-A gets its own process-based backend.** Not IMPRESS's engine, and not the
+**ROME gets its own process-based backend.** Not IMPRESS's engine, and not the
 in-process default — a fine-tune's GPU allocation would otherwise stay resident in
 the campaign driver for the whole run. See
 [Execution](../design/execution.md#why-a-gpu-round-should-be-a-command).
@@ -185,7 +185,7 @@ and [what the campaign data says](../impress.md).
 
 ## Seeing it in the log
 
-ROME-A's log lines are formatted to match IMPRESS's, so the two interleave
+ROME's log lines are formatted to match IMPRESS's, so the two interleave
 readably in one campaign log:
 
 ```text

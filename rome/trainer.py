@@ -3,7 +3,7 @@
 Responsibilities, straight off the design slide:
 
 * create and schedule training tasks on HPC — every round is submitted to the
-  ``radical.asyncflow`` engine the host workflow handed to ROME-A, so the
+  ``radical.asyncflow`` engine the host workflow handed to ROME, so the
   training task gets its own nodes and GPUs like any other workflow task;
 * publish updated checkpoints back to the workflow, so the stream manager and
   the host workflow pick up the improved model mid-campaign;
@@ -90,7 +90,7 @@ def _command_body(command: str):
 
 
 class TrainerStatus(Enum):
-    """Status of the ROME-A training manager.
+    """Status of the ROME training manager.
 
     ``NOT_ENOUGH_DATA`` and ``WAITING`` are both idle, but they answer different
     questions: the first says a round is *not currently possible*, the second
@@ -150,7 +150,7 @@ class TrainerConfig:
         Dragon pre-registers a running task's result key, so *reading* that key
         blocks rather than raising ``KeyError``. rhapsody's monitor sweeps its
         outstanding tasks in order, so a task that never completes -- which is
-        exactly what a ROME-A inference stream is -- blocks the sweep on its own
+        exactly what a ROME inference stream is -- blocks the sweep on its own
         key forever, and every result behind it, including a finished training
         round, is never delivered. Confirmed by direct measurement::
 
@@ -190,7 +190,7 @@ class Trainer:
     Parameters
     ----------
     ddict : Namespace
-        Shared state — the same DDict view every other ROME-A component uses.
+        Shared state — the same DDict view every other ROME component uses.
     data : DataManager
         Corpus the training rounds draw from.
     asyncflow : WorkflowEngine

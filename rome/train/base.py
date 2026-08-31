@@ -1,4 +1,4 @@
-"""Base class every ROME-A training algorithm implements.
+"""Base class every ROME training algorithm implements.
 
 "Adding new models and training algorithms requires just one task" — this is
 that task's interface. A trainer receives a dataset built by the data manager
@@ -18,7 +18,7 @@ from typing import Any, List, Optional, Tuple
 
 
 class TrainTask:
-    """Abstract base for ROME-A training algorithms.
+    """Abstract base for ROME training algorithms.
 
     Subclasses implement :meth:`train`. Everything else — when to run, where
     the data comes from, who hears about the new checkpoint — belongs to the
@@ -122,7 +122,7 @@ class FunctionTrainer(TrainTask):
     """Adapter that turns a bare function into a :class:`TrainTask`.
 
     The cheapest possible way to plug an existing training script into
-    ROME-A::
+    ROME::
 
         rome = Manager(trainer=FunctionTrainer(my_finetune, gpus=4))
 

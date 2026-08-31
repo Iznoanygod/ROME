@@ -1,4 +1,4 @@
-"""End-to-end ROME-A: a host workflow that improves the model it is using.
+"""End-to-end ROME: a host workflow that improves the model it is using.
 
 These run the three managers together against a fake asyncflow engine and a
 plain dict standing in for a Dragon DDict. No GPUs, no real model — the point
@@ -95,7 +95,7 @@ def test_manual_trigger_trains_before_the_threshold(asyncflow, tmp_path):
 # -- the closed loop -------------------------------------------------------
 
 def test_streams_swap_onto_the_checkpoint_the_campaign_produced(asyncflow, tmp_path):
-    """The whole ROME-A story in one test.
+    """The whole ROME story in one test.
 
     An inference stream serves requests using model v0. The workflow scores the
     results into the corpus. Once enough accumulate the training manager runs a
@@ -320,7 +320,7 @@ def test_manager_works_as_an_async_context_manager(asyncflow, tmp_path):
 # -- who owns the workflow engine -----------------------------------------
 
 def test_rome_builds_its_own_engine_when_not_given_one(tmp_path):
-    """A host that keeps its engine private can still hand ROME-A nothing."""
+    """A host that keeps its engine private can still hand ROME nothing."""
     trainer = FakeTrainer()
     rome = Manager(
         data_config=DataConfig(min_samples=2),

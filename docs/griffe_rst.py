@@ -1,6 +1,6 @@
-"""Griffe extension: render ROME-A's reST-flavoured docstrings as Markdown.
+"""Griffe extension: render ROME's reST-flavoured docstrings as Markdown.
 
-ROME-A's docstrings are written in the Sphinx dialect — ``:meth:`start```,
+ROME's docstrings are written in the Sphinx dialect — ``:meth:`start```,
 ``:class:`~rome.manager.Manager```, ``.. warning::`` — because that is what the
 source has always used and what an editor's tooling understands. MkDocs renders
 Markdown, where those constructs are meaningless and leak into the page as
