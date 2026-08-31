@@ -147,3 +147,15 @@ examples/        ROME adoption examples
 scripts/         operational helpers for running an IMPRESS campaign
 tests/           unit, mocked-integration and Dragon checks
 ```
+
+**`rome/` is the framework** — the only thing `pip install` ships, and the only
+thing the [API reference](api/index.md) documents.
+
+Everything beside it is there to be read or run, not imported. `examples/` is
+adoption code you copy from, and it is where the ProteinMPNN trainer lives, since
+that is an IMPRESS-R integration rather than framework. `scripts/` is three
+operational tools for an IMPRESS campaign — nothing in `rome/` imports them, and
+one of them, `populate_best_models.py`, you will need whenever IMPRESS runs off
+RadicalExecutionBackend ([why](impress.md#campaign-helper-scripts)). `tests/`
+splits into a laptop suite and Dragon scripts the launcher runs
+([what each covers](installation.md#tests)).

@@ -29,15 +29,33 @@ This pulls in the framework and its trainers:
     A workflow that never trains an LLM never pays for that stack, even though
     it is installed.
 
-## Test extras
+## Tests
 
 ```bash
 pip install -e '.[test]'
 pytest -m fast          # unit + mocked integration, no GPUs
 ```
 
-`-m fast` is everything that does not download a model or run real training.
-The `slow` marker covers end-to-end tests that do.
+`conftest.py` tags every test that is not explicitly marked `slow` as `fast`, so
+`-m fast` is "everything that runs on a laptop". It needs no GPU, no allocation
+and no Dragon runtime: the fixtures stub the heavyweight third-party modules with
+*working* stand-ins — a plain `dict` for a `DDict`, a `threading.Event` for
+Dragon's — so the real ROME code paths are exercised rather than mocked out.
+
+What the suite covers:
+
+| Tests | What they check |
+| --- | --- |
+| `unit/test_data_manager.py`, `test_training_manager.py`, `test_stream_manager.py` | Each manager in isolation — admission, sampling, consumption; round scheduling, publication, status; request claiming, reload, drain. |
+| `unit/test_train_tasks.py`, `test_dummy.py`, `test_namespace.py`, `test_logging.py` | The `TrainTask` interface, the model-free stand-ins, the DDict namespace helpers, the log format. |
+| `unit/test_mpnn_trainer_data.py` | The ProteinMPNN trainer's dataset assembly and chain designation. |
+| `integration/test_rome_agnostic_loop.py`, `test_dummy_loop.py` | The whole closed loop against stubs — data in, round fires, checkpoint published, stream reloads. |
+| `integration/test_impress_r.py`, `unit/test_impress_r_hooks.py` | The IMPRESS-R seam. Skipped via `importorskip` unless IMPRESS and rhapsody are installed. |
+| `integration/test_mpnn_train_real.py` | A real ProteinMPNN fine-tune. Skipped unless `ROME_MPNN_TEST_REPO` points at a `dauparas/ProteinMPNN` checkout. |
+
+The heavyweight tests are gated by those skip conditions rather than by the
+`slow` marker, which nothing currently carries — so `-m fast` and a bare `pytest`
+select the same set.
 
 ## Documentation
 
@@ -76,13 +94,35 @@ dragon -s examples/agnostic/dummy_loop.py    # multi-node placement
 dragon-cleanup-deprecated                    # after every Dragon run
 ```
 
-The `-s` form is also how ROME's Dragon checks are run — they are scripts, not
-pytest modules, because the launcher runs a script rather than a test session:
+The `-s` form is also how ROME's Dragon checks are run. They live in
+`tests/dragon/` but are **scripts, not pytest modules**, because the launcher
+runs a script rather than a test session — `pytest -m fast` does not collect
+them:
 
 ```bash
 dragon -s tests/dragon/test_namespace_dragon.py   # DDict/Event primitives
 dragon -s tests/dragon/test_manager_dragon.py     # the whole loop, 4 replicas
+dragon-cleanup-deprecated                         # after every one
 ```
+
+They split into two kinds:
+
+| Script | Exercises |
+| --- | --- |
+| `test_namespace_dragon.py` | ROME's `Namespace` against a real DDict |
+| `test_manager_dragon.py` | The whole loop, 4 stream replicas, on real placement |
+| `test_stream_pickle_dragon.py` | That a `StreamTask` survives the process boundary |
+| `test_result_delivery_dragon.py` | That a finished round's checkpoint reaches the driver |
+| `test_keys_race_dragon.py`, `test_keys_union_dragon.py` | **Dragon itself** — that `keys()` truncates under concurrent pops |
+| `test_service_blocks_results_dragon.py`, `test_executable_result_hang_dragon.py` | **rhapsody itself** — that a running service blocks result delivery behind it |
+| `test_task_capacity_dragon.py` | **The allocation** — how many concurrent tasks it will actually place |
+
+The second group imports no ROME at all. They are the reproducers behind the
+findings in [ROME on Dragon](dragon.md): each one isolates a backend behaviour
+that forced a design decision — why `max_records` carries a warning, why
+`result_fallback_seconds` exists, why a stream replica count has to stay under
+the allocation's capacity. Keep them; when a Dragon or rhapsody version changes,
+they are how you find out whether the workaround is still needed.
 
 [ROME on Dragon](dragon.md) records what running there turned up — notably
 that a DDict client handle cannot be shared across threads — and the one known
