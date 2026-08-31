@@ -6,8 +6,8 @@ Boltz do not share a scale — so the thresholds have to come from the campaign
 you are actually running. This reads whatever ``af_stats_*.csv`` exist so far
 and tells you what a filter would admit.
 
-    python scripts/af_stats_watch.py /path/to/campaign            # once
-    python scripts/af_stats_watch.py /path/to/campaign --follow   # every 60s
+    python examples/impress_r/af_stats_watch.py /path/to/campaign            # once
+    python examples/impress_r/af_stats_watch.py /path/to/campaign --follow   # every 60s
 
 Read-only: it never writes into the campaign. Safe to run against a directory
 being written by a live job.

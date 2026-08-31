@@ -1,7 +1,7 @@
 #!/bin/bash
 # Answer the open IMPRESS-R wiring questions from a campaign directory.
 #
-#   bash scripts/impress_campaign_probe.sh /path/to/prod > campaign_probe.txt
+#   bash examples/impress_r/impress_campaign_probe.sh /path/to/prod > campaign_probe.txt
 #
 # Produces one bounded text file, typically a few hundred KB, dominated by the
 # concatenated score CSVs. It reads; it never writes into the campaign.

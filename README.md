@@ -174,9 +174,17 @@ rome/            ROME
   utils.py         DDict layout helpers + asyncflow submission
   dummy.py         model-free trainer and streams, for smoke tests
 examples/        ROME adoption examples
-scripts/         operational helpers for running an IMPRESS campaign
+  agnostic/        framework only — no IMPRESS needed
+  impress_r/       the IMPRESS-R integration: trainer, seams, campaign tooling
 tests/           unit, mocked-integration and Dragon checks
 ```
+
+**`rome/` is the framework** — the only thing `pip install` ships. Everything
+beside it is there to be read or run, not imported. `examples/impress_r/` carries
+everything specific to that campaign: the ProteinMPNN trainer, the pipeline
+seams, and three operational tools. See `docs/impress.md` for what each is for —
+`populate_best_models.py` in particular is needed whenever IMPRESS runs off
+RadicalExecutionBackend.
 
 ## Running it on a cluster
 
@@ -200,9 +208,12 @@ dragon -s tests/dragon/test_manager_dragon.py     # the whole loop, 4 replicas
 dragon-cleanup-deprecated                         # after every Dragon run
 ```
 
-`docs/dragon.md` records what running on Dragon turned up — notably that a
-DDict client handle cannot be shared across threads — and the one known
-scaling limit.
+Four of those Dragon scripts import no ROME at all — they probe Dragon,
+rhapsody and the allocation itself, and are the reproducers behind the findings
+in `docs/dragon.md`: why `max_records` carries a warning, why
+`result_fallback_seconds` exists, and why a stream replica count has to stay
+under the allocation's task capacity. `docs/installation.md` lists what every
+test covers.
 
 ## Documentation
 
