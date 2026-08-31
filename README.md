@@ -173,9 +173,9 @@ rome/            ROME
   train/           trainer tasks (base, llm/GRPO)
   utils.py         DDict layout helpers + asyncflow submission
   dummy.py         model-free trainer and streams, for smoke tests
-oldrome/         the earlier flow-based implementation, kept for reference
 examples/        ROME adoption examples
-protein_generation/  IMPRESS pipeline scripts
+scripts/         operational helpers for running an IMPRESS campaign
+tests/           unit, mocked-integration and Dragon checks
 ```
 
 ## Running it on a cluster
