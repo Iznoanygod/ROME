@@ -109,18 +109,26 @@ def test_published_checkpoint_is_original_format(tmp_path):
 
 
 def test_weights_publish_into_the_repo_when_asked(tmp_path):
-    """With publish_into_repo the weights replace what IMPRESS's next pass runs."""
-    from examples.impress_r.mpnn import ProteinMPNNConfig, published_weights_path
+    """publish_into_repo names the fixed pointer IMPRESS's next pass loads."""
+    from examples.impress_r.mpnn import (
+        ProteinMPNNConfig,
+        repo_pointer_path,
+        versioned_checkpoint_path,
+    )
 
     repo = str(tmp_path / "ProteinMPNN")
     cfg = ProteinMPNNConfig(mpnn_repo=repo, model_name="v_48_020",
                             publish_into_repo=True)
-    assert published_weights_path(cfg, str(tmp_path / "round")) == \
-        f"{repo}/vanilla_model_weights/v_48_020.pt"
+    # The pointer the wrapper copies the latest version onto (no version in it).
+    assert repo_pointer_path(cfg) == f"{repo}/vanilla_model_weights/v_48_020.pt"
 
+    # Without publish_into_repo there is no repo pointer.
     cfg2 = ProteinMPNNConfig(train_func=lambda *a: "x", model_name="v_48_020")
+    assert repo_pointer_path(cfg2) is None
+
+    # The durable checkpoint is versioned and lives in the round's own dir.
     out = str(tmp_path / "round")
-    assert published_weights_path(cfg2, out) == f"{out}/v_48_020.pt"
+    assert versioned_checkpoint_path(cfg, out, 3) == f"{out}/v_48_020_v3.pt"
 
 
 

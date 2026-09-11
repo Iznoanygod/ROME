@@ -89,22 +89,30 @@ things the integration must get right, both from `docs/impress.md`:
 
 ## 4. What a round produces, and where it goes
 
-The round writes a checkpoint in the original format —
-`{"model_state_dict": ..., "num_edges": 48, "noise_level": 0.2}` — via
-`original_checkpoint`, the exact dict `protein_mpnn_run.py` loads.
+Every round writes a **versioned checkpoint that is never overwritten** —
+`{model_name}_v{version}.pt`, in that round's own directory
+(`<checkpoint_dir>/proteinmpnn/v<version>/`) — in the original format
+`{"model_state_dict": ..., "num_edges": 48, "noise_level": 0.2}` (via
+`original_checkpoint`), the exact dict `protein_mpnn_run.py` loads. So the whole
+history is kept, one file per version, with the version in the name.
+`versioned_checkpoint_path(config, output_dir, version)` names it, and it is what
+`manager.get_current_model()` returns — so anything that reloads off the current
+model reads the exact versioned file.
 
-Getting it *back into the campaign* is the seam that actually closes the loop.
-`mpnn_wrapper.py` never passes `--path_to_model_weights`, so
-`protein_mpnn_run.py` loads `{mpnn_repo}/vanilla_model_weights/{model_name}.pt`
-by default. With `publish_into_repo=True` the trainer writes the new weights
-*there* (atomically — temp file then `os.replace`, so a mid-pass reader never
-sees a half-written file), replacing what the campaign runs with. The next pass
-picks them up with no wrapper change. `model_name` must match the `--model_name`
-IMPRESS runs (`v_48_020` by default).
+Getting the latest *back into the campaign* is the seam that closes the loop.
+`mpnn_wrapper.py` never passes `--path_to_model_weights`, so `protein_mpnn_run.py`
+loads the fixed path `{mpnn_repo}/vanilla_model_weights/{model_name}.pt` by
+default. With `publish_into_repo=True` the round **copies** its versioned
+checkpoint onto that fixed pointer (atomically — temp file then `os.replace`, so a
+mid-pass reader never sees a half-written file), so the next pass runs the new
+weights with no wrapper change. `repo_pointer_path(config)` names that pointer;
+`model_name` must match the `--model_name` IMPRESS runs (`v_48_020` by default).
+The pointer is just "the current version" — the versioned files remain the kept
+archive.
 
-Without `publish_into_repo`, the checkpoint lands in the round's `output_dir` and
-pointing MPNN at it is the integration's job — e.g. patch the wrapper to pass
-`--path_to_model_weights`.
+Without `publish_into_repo`, only the versioned checkpoints are written, and
+pointing MPNN at the one you want is the integration's job — e.g. pass its path
+via `--path_to_model_weights`, reading it from `get_current_model()`.
 
 ## 5. Config that must match the weights
 
