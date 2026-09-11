@@ -89,9 +89,10 @@ rome.TrainerConfig(trainer=MyTrainer(gpus=4, nodes=2))
 ```
 
 A bare `(dataset, output_dir, **kwargs) -> checkpoint_path` function works too —
-it is wrapped in a `FunctionTrainer` for you. Two trainers ship with ROME-A:
-`rome.train.llm.GRPOTrainer` (TRL/GRPO for LLMs) and
-`examples.impress_r.mpnn.ProteinMPNNTrainer` (IMPRESS-R).
+it is wrapped in a `FunctionTrainer` for you. The LLM trainers ship with ROME-A —
+`rome.train.llm.GRPOTrainer` (TRL/GRPO) and `rome.train.llm.SFTTrainer`
+(supervised fine-tuning on chosen responses) — while
+`examples.impress_r.mpnn.ProteinMPNNTrainer` (IMPRESS-R) lives with its example.
 
 ### Runtime
 
@@ -114,8 +115,10 @@ never the model. IMPRESS-R adds ROME-A so the campaign's own highest-confidence
 sequences fine-tune ProteinMPNN mid-campaign, and the improved model returns to
 the pipeline. IMPRESS itself runs unchanged.
 
-See `examples/agnostic/impress_r.py` (data + training) and
-`examples/agnostic/llm_grpo_streams.py` (all three managers).
+See `examples/agnostic/impress_r.py` (data + training),
+`examples/agnostic/llm_grpo_streams.py` (all three managers, GRPO), and
+`examples/agnostic/llm_sft_streams.py` (all three managers, SFT on the model's
+own correct answers — rejection sampling / STaR).
 
 `examples/impress_r/dummy_adaptive_rome.py` is the smallest version of the
 integration: IMPRESS's own dummy adaptive example with **two lines of ROME-A**
@@ -171,7 +174,7 @@ rome/            ROME-A
   data.py          Data Manager
   stream.py        Stream Manager
   trainer.py       Training Manager
-  train/           trainer tasks (base, llm/GRPO, mpnn/ProteinMPNN)
+  train/           trainer tasks (base; llm — GRPO + SFT)
   utils.py         DDict layout helpers + asyncflow submission
 oldrome/         the original ROME flows, kept for reference
 examples/        ROME-A adoption examples
