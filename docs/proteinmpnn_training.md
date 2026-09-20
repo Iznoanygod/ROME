@@ -191,7 +191,35 @@ checkpoint format and publication path) is covered unconditionally in
 `(manifest_path, output_dir, config) -> checkpoint_path` — for a fork, or to
 bring the campaign up one layer at a time before switching the real loop on.
 
-## 8. Open items
+## 8. Generation as a stream (the other half of the loop)
+
+The trainer *improves* ProteinMPNN; `examples/impress_r/mpnn_stream.py` *runs* it
+as a ROME-A inference stream, so a protein workflow can use all three managers
+(generate → score → train → hot-swap) the way the LLM examples do. Feed the
+stream backbone PDBs, get designed sequences back; when the trainer publishes a
+new checkpoint the stream reloads onto it and the next batch is designed with the
+improved model.
+
+Two implementations, both **subprocess** — neither reimplements ProteinMPNN's
+sampling, so both run the checkout's own tested inference:
+
+* `mpnn_run_stream` — the ROME-native path: `protein_mpnn_run.py` per backbone,
+  passing `--path_to_model_weights` so it uses the *exact* published versioned
+  checkpoint (clean per-version hot-swap).
+* `impress_mpnn_stream` — the IMPRESS path: this example's `mpnn_wrapper.py`
+  (chain parse/assign + `protein_mpnn_run.py`), i.e. exactly what the campaign
+  runs. Its wrapper can't take an explicit weights path, so on each reload the
+  stream refreshes the repo's fixed `{model_name}.pt` pointer to the new
+  checkpoint — the same pointer `publish_into_repo` keeps current.
+
+A request is `{"backbone_id", "pdb_path", "design_chains"?, "num_seqs"?}`; each
+output record is `{"backbone_id", "sequence", "score", "sample", "model_version",
+"pdb_path"}` — hand it to a reward stream (AlphaFold) and then
+`add_training_data`, closing the loop back to the trainer. The FASTA parser,
+command builders and reload hook are covered in `tests/unit/test_mpnn_stream.py`;
+the subprocess paths need the checkout and a GPU, so they run on-cluster.
+
+## 9. Open items
 
 * **Drift.** Fine-tuning only on self-generated designs pulls the model toward
   the campaign. The standard mitigation mixes in a slice of the original PDB

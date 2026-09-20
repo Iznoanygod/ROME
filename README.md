@@ -117,7 +117,12 @@ the pipeline. IMPRESS itself runs unchanged.
 See `examples/agnostic/impress_r.py` (data + training),
 `examples/agnostic/llm_grpo_streams.py` (all three managers, GRPO), and
 `examples/agnostic/llm_sft_streams.py` (all three managers, SFT on the model's
-own correct answers — rejection sampling / STaR).
+own correct answers — rejection sampling / STaR). For the protein side,
+`examples/impress_r/mpnn.py` is the ProteinMPNN trainer and
+`examples/impress_r/mpnn_stream.py` runs ProteinMPNN design as an inference
+stream (a ROME-native `protein_mpnn_run.py` path and an IMPRESS `mpnn_wrapper.py`
+path) that hot-swaps onto each published checkpoint — the generation half of the
+same loop.
 
 `examples/impress_r/dummy_adaptive_rome.py` is the smallest version of the
 integration: IMPRESS's own dummy adaptive example with **two lines of ROME**
