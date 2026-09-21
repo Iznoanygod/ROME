@@ -1,4 +1,4 @@
-"""ProteinMPNN inference as a ROME-A stream — generate sequences, hot-swap weights.
+"""ProteinMPNN inference as a ROME stream — generate sequences, hot-swap weights.
 
 The training half of IMPRESS-R (``mpnn.py``) fine-tunes ProteinMPNN; this is the
 *generation* half as a persistent :class:`rome.StreamConfig`. An inference stream

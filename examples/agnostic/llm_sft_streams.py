@@ -74,7 +74,7 @@ def math_reward(completion: str, gold: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The workflow's own inference and reward code. ROME-A runs it in a loop.
+# The workflow's own inference and reward code. ROME runs it in a loop.
 # ---------------------------------------------------------------------------
 
 model_config = ModelConfig(
@@ -129,7 +129,7 @@ def score(generations):
 
 
 # ---------------------------------------------------------------------------
-# ROME-A adoption
+# ROME adoption
 # ---------------------------------------------------------------------------
 
 async def main():

@@ -194,7 +194,7 @@ bring the campaign up one layer at a time before switching the real loop on.
 ## 8. Generation as a stream (the other half of the loop)
 
 The trainer *improves* ProteinMPNN; `examples/impress_r/mpnn_stream.py` *runs* it
-as a ROME-A inference stream, so a protein workflow can use all three managers
+as a ROME inference stream, so a protein workflow can use all three managers
 (generate → score → train → hot-swap) the way the LLM examples do. Feed the
 stream backbone PDBs, get designed sequences back; when the trainer publishes a
 new checkpoint the stream reloads onto it and the next batch is designed with the

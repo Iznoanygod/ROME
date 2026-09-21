@@ -225,7 +225,7 @@ def versioned_checkpoint_path(config: "ProteinMPNNConfig", output_dir: str,
     Every round writes ``{model_name}_v{version}.pt`` into its own ``output_dir``
     (the training manager lays these out per version, ``…/v<version>/``), so no
     round ever overwrites another's weights and the whole history is kept, with
-    the version right in the filename. This is the path ROME-A publishes as the
+    the version right in the filename. This is the path ROME publishes as the
     current model, so :meth:`rome.Manager.get_current_model` (and any reload off
     it) points at the exact versioned file.
     """
